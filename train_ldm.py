@@ -1,4 +1,4 @@
-import sde
+import sde_v
 import ml_collections
 import torch
 from torch import multiprocessing as mp
@@ -92,8 +92,11 @@ def train(config):
     data_generator = get_data_generator()
 
     # set the score_model to train
-    score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
-    score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
+    # score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
+    # score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
+    # 【修改】：改用 get_sde 呼叫 'vpsde_ztsnr'，強制啟動 Zero-Terminal SNR
+    score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.get_sde('vpsde_ztsnr'))
+    score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.get_sde('vpsde_ztsnr'))
 
     def train_step(prime_target, prime_anchor_view, prime_targe_pos, encode_anchor, encode_target):
         _metrics = dict()
@@ -106,30 +109,6 @@ def train(config):
                 _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
                 loss = sde.LSimple(score_model, _z, pred=config.pred, conditions=[encode_anchor, prime_targe_pos])
 
-                # =========================================================================
-                # === 【重要新增】：特徵蒸餾 (Feature Distillation) 的 50% 課程學習策略 ===
-                # =========================================================================
-                # if train_state.step <= config.train.n_steps // 2:
-                #     # 取得 Batch 中每張圖各自的特徵 Loss (形狀為 [B])
-                #     l_feat_batch = accelerator.unwrap_model(nnet).forward_feature_loss(encode_anchor, prime_targe_pos,
-                #                                                                        encode_target)
-                #
-                #     # 【關鍵防禦】：偵測哪些圖是「非空白」的正常圖片 (排除 CFG dropout 的干擾)
-                #     # 判斷方式：如果一張圖的絕對值總和極小 (< 1e-4)，代表它是被捨棄的空白圖
-                #     is_active = (prime_anchor_view.abs().view(prime_anchor_view.shape[0], -1).sum(dim=1) > 1e-4)
-                #
-                #     decay_weight = math.cos(train_state.step / config.train.n_steps * math.pi)
-                #
-                #     # 只計算那些「正常圖片」的特徵蒸餾 Loss，並把權重降為 0.5 避免喧賓奪主
-                #     if is_active.sum() > 0:
-                #         valid_l_feat = l_feat_batch[is_active].mean()
-                #         loss = loss + 0.5 * valid_l_feat * decay_weight
-                #
-                #         # 記錄到 wandb
-                #         _metrics['l_feat'] = accelerator.gather(valid_l_feat.detach()).mean()
-                #     else:
-                #         _metrics['l_feat'] = torch.tensor(0.0, device=device)
-                # =========================================================================
 
             else:
                 raise NotImplementedError(config.train.mode)
@@ -179,40 +158,33 @@ def train(config):
             else:
                 raise NotImplementedError
 
-            # pred_target = decode(z)
-            # pred_target = make_grid(dataset.unpreprocess(pred_target), 10)
-            #
-            # decode_target = decode(encode_target)
-            # decode_target = make_grid(dataset.unpreprocess(decode_target), 10)
-            #
-            # prime_target = make_grid(dataset.unpreprocess(prime_target), 10)
-            # 【關鍵修改】：所有的圖都只取前 3 個通道 (RGB) 去做視覺化儲存
-                # 【修正】：因為已經沒有景深了，decode 出來直接就是純 RGB，不用再 [:, :3, :, :]
-            pred_target = decode(z)
-            pred_target = make_grid(dataset.unpreprocess(pred_target), 10)
+                # 【修正】：將所有 Tensor 轉回 fp32 (.float()) 並移至 CPU，確保 WandB 能夠正常渲染
+            pred_target = decode(z).float().cpu()
+            pred_target_grid = make_grid(dataset.unpreprocess(pred_target), 10)
 
-            decode_target = decode(encode_target)
-            decode_target = make_grid(dataset.unpreprocess(decode_target), 10)
+            decode_target = decode(encode_target).float().cpu()
+            decode_target_grid = make_grid(dataset.unpreprocess(decode_target), 10)
 
-                # prime_target 跟 prime_anchor_view 是 DataLoader 來的，如果你 DataLoader 還是吐 4 通道，這裡才需要切片
-            prime_target_rgb = prime_target[:, :3, :, :]
-            prime_target_rgb = make_grid(dataset.unpreprocess(prime_target_rgb), 10)
+                # 將 DataLoader 來的資料取前 3 個通道，轉 float32 並放 CPU
+            prime_target_rgb = prime_target[:, :3, :, :].float().cpu()
+            prime_target_grid = make_grid(dataset.unpreprocess(prime_target_rgb), 10)
 
-            decode_anchor = decode(encode_anchor)
-            decode_anchor = make_grid(dataset.unpreprocess(decode_anchor), 10)
+            decode_anchor = decode(encode_anchor).float().cpu()
+            decode_anchor_grid = make_grid(dataset.unpreprocess(decode_anchor), 10)
 
-            prime_anchor_view_rgb = prime_anchor_view[:, :3, :, :]
-            prime_anchor_view_rgb = make_grid(dataset.unpreprocess(prime_anchor_view_rgb), 10)
+            prime_anchor_view_rgb = prime_anchor_view[:, :3, :, :].float().cpu()
+            prime_anchor_view_grid = make_grid(dataset.unpreprocess(prime_anchor_view_rgb), 10)
 
-                # 然後再 save_image (...)
+                # 統一使用後綴為 _grid 的變數進行儲存
+            save_image(pred_target_grid, os.path.join(config.sample_dir, f'predict_target-{train_state.step}.png'))
+            save_image(decode_target_grid, os.path.join(config.sample_dir, f'decode_target-{train_state.step}.png'))
+            save_image(prime_target_grid, os.path.join(config.sample_dir, f'prime_target-{train_state.step}.png'))
+            save_image(decode_anchor_grid, os.path.join(config.sample_dir, f'decode_anchor-{train_state.step}.png'))
+            save_image(prime_anchor_view_grid,
+                           os.path.join(config.sample_dir, f'prime_anchor-{train_state.step}.png'))
 
-
-            save_image(pred_target, os.path.join(config.sample_dir, f'predict_target-{train_state.step}.png'))
-            save_image(decode_target, os.path.join(config.sample_dir, f'decode_target-{train_state.step}.png'))
-            save_image(prime_target, os.path.join(config.sample_dir, f'prime_target-{train_state.step}.png'))
-            save_image(decode_anchor, os.path.join(config.sample_dir, f'decode_anchor-{train_state.step}.png'))
-            save_image(prime_anchor_view, os.path.join(config.sample_dir, f'prime_anchor-{train_state.step}.png'))
-            wandb.log({'samples': wandb.Image(pred_target)}, step=train_state.step)
+                # 安全地紀錄到 wandb
+            wandb.log({'samples': wandb.Image(pred_target_grid)}, step=train_state.step)
             torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
 

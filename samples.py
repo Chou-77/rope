@@ -4,12 +4,13 @@ import argparse
 import numpy as np
 from PIL import Image
 from torchvision.transforms import transforms
-import sde
+import sde_v
 import ml_collections
 import torch
 from torch import multiprocessing as mp
 from torchvision.utils import make_grid, save_image
 import utils
+import time
 import einops
 from torch.utils._pytree import tree_map
 import accelerate
@@ -17,8 +18,6 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
 import tempfile
-import time
-from tools.fid_score import calculate_fid_given_paths
 from absl import logging
 import builtins
 import os
@@ -36,29 +35,28 @@ from eval_dir.inception import inception_score
 import cv2
 from transformers import pipeline
 
+
 # def encode(_batch, autoencoder):
 #     return autoencoder.encode(_batch)
 #
 # def decode(_batch, autoencoder):
 #     return autoencoder.decode(_batch)
 def encode(_batch, autoencoder):
+    # 只取前 3 個通道 (RGB) 給 Autoencoder
     rgb = _batch[:, :3, :, :]
-    depth = _batch[:, 3:, :, :]
-    latent_rgb = autoencoder.encode(rgb)
-    latent_depth = torch.nn.functional.interpolate(depth, size=latent_rgb.shape[2:], mode='bilinear', align_corners=False)
-    return torch.cat([latent_rgb, latent_depth], dim=1)
+    return autoencoder.encode(rgb)
+
 
 def decode(_batch, autoencoder):
-    latent_rgb = _batch[:, :-1, :, :]
-    latent_depth = _batch[:, -1:, :, :]
-    rgb = autoencoder.decode(latent_rgb)
-    depth = torch.nn.functional.interpolate(latent_depth, size=rgb.shape[2:], mode='bilinear', align_corners=False)
-    return torch.cat([rgb, depth], dim=1)
+    # _batch 裡面現在只有純 Latent RGB，直接解碼
+    return autoencoder.decode(_batch)
+
 
 def unpreprocess(v):
     v = 0.5 * (v + 1.)
     v.clamp_(0., 1.)
     return v
+
 
 def destandard(v):
     v = (v + 1) * 127.5
@@ -85,8 +83,9 @@ def calculate_sin_cos(lpos, gpos, grid_size=12):
     # 展平為 [L, 2] 並回傳
     return grid.reshape(-1, 2)
 
+
 def calculate_input_pos(target):
-    init_location = (1000, 1000, 256, 256)
+    init_location = (200, 200, 256, 256)
     top, down, left, right = target
     i = init_location[0] - int(256 * top)
     j = init_location[1] - int(256 * left)
@@ -94,6 +93,7 @@ def calculate_input_pos(target):
     w = int(256 * (left + right)) + 256
     target = (i, j, h, w)
     return init_location, target
+
 
 def setup_for_distributed(is_master):
     """
@@ -108,6 +108,7 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
+
 
 def init_distributed_mode(args):
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -128,7 +129,7 @@ def init_distributed_mode(args):
         host_name = stdout.decode().splitlines()[0]
         args.dist_url = f'tcp://{host_name}:15752'
     if 'MASTER_ADDR' in os.environ and 'MASTER_PORT' in os.environ:
-        args.dist_url = f'tcp://'+str(os.environ['MASTER_ADDR']) + ':' +str(os.environ['MASTER_PORT'])
+        args.dist_url = f'tcp://' + str(os.environ['MASTER_ADDR']) + ':' + str(os.environ['MASTER_PORT'])
     else:
         args.dist_url = f'tcp://localhost:27461'
     # args.dist_url = f'tcp://localhost:27461'
@@ -144,10 +145,11 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
     print("Initialization finish")
 
+
 class WikiArtDataset(Dataset):
-    def __init__(self, path='./dataset/wikiart/train/', size=56):
+    def __init__(self, path='./dataset/wikiart/test/', size=56):
         f_name = os.listdir(path)
-        self.path = [path+str(f_name[i]) for i in range(len(f_name))]
+        self.path = [path + str(f_name[i]) for i in range(len(f_name))]
         print("Total evaluation images: ", len(self.path))
         self.input_crop = transforms.Compose([
             transforms.CenterCrop((size, size)),
@@ -157,8 +159,10 @@ class WikiArtDataset(Dataset):
             transforms.Resize((192, 192))
         ])
         self.to_tensor = transforms.ToTensor()
+
     def __len__(self):
         return len(self.path)
+
     def __getitem__(self, idx):
         path = self.path[idx]
         pil_image = Image.open(path)
@@ -170,11 +174,20 @@ class WikiArtDataset(Dataset):
         input_img = np.array(self.input_crop(pil_image))
         input_img = input_img / 127.5 - 1
         return self.to_tensor(input_img), self.to_tensor(target_img)
+
 
 class BuildingDataset(Dataset):
     def __init__(self, path='./dataset/building/test/', size=56):
-        f_name = os.listdir(path)        
-        self.path = [path+str(f_name[i]) for i in range(len(f_name))]
+        f_name = os.listdir(path)
+        self.path = []
+        f_path = [path + str(f_name[i]) for i in range(len(f_name))]
+        for i in range(len(f_path)):
+            try:
+                pil_image = Image.open(f_path[i])
+                pil_image.load()
+                self.path.append(f_path[i])
+            except:
+                pass
         print("Total evaluation images: ", len(self.path))
         self.input_crop = transforms.Compose([
             transforms.CenterCrop((size, size)),
@@ -184,36 +197,10 @@ class BuildingDataset(Dataset):
             transforms.Resize((192, 192))
         ])
         self.to_tensor = transforms.ToTensor()
-    def __len__(self):
-        return len(self.path)
-    def __getitem__(self, idx):
-        path = self.path[idx]
-        pil_image = Image.open(path)
-        pil_image.load()
-        pil_image = pil_image.convert("RGB")
-        # pil_image = self.target_crop(pil_image)
-        target_img = np.array(pil_image)
-        target_img = target_img / 127.5 - 1
-        input_img = np.array(self.input_crop(pil_image))
-        input_img = input_img / 127.5 - 1
-        return self.to_tensor(input_img), self.to_tensor(target_img)
 
-class FlickrDataset(Dataset):
-    def __init__(self, path='./dataset/scenery/train/', size=56):
-        f_name = os.listdir(path)     
-        # self.path = [path+str(f_name[i]) for i in range(len(f_name))]   
-        self.path = [path+str(f_name[i]) for i in range(len(f_name)) if int(f_name[i].split('_')[-1].split('.')[0].replace(',', ''))>5040]
-        print("Total evaluation images: ", len(self.path))
-        self.input_crop = transforms.Compose([
-            transforms.CenterCrop((size, size)),
-            transforms.Resize((192, 192))
-        ])
-        self.target_crop = transforms.Compose([
-            transforms.Resize((192, 192))
-        ])
-        self.to_tensor = transforms.ToTensor()
     def __len__(self):
         return len(self.path)
+
     def __getitem__(self, idx):
         path = self.path[idx]
         pil_image = Image.open(path)
@@ -225,6 +212,38 @@ class FlickrDataset(Dataset):
         input_img = np.array(self.input_crop(pil_image))
         input_img = input_img / 127.5 - 1
         return self.to_tensor(input_img), self.to_tensor(target_img)
+
+
+class FlickrDataset(Dataset):
+    def __init__(self, path='./dataset/scenery/test/', size=56):
+        f_name = os.listdir(path)
+        self.path = [os.path.join(path, f) for f in f_name if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        # self.path = [path+str(f_name[i]) for i in range(len(f_name)) if int(f_name[i].split('_')[-1].split('.')[0].replace(',', ''))>5040]
+        print("Total evaluation images: ", len(self.path))
+        self.input_crop = transforms.Compose([
+            transforms.CenterCrop((size, size)),
+            transforms.Resize((192, 192))
+        ])
+        self.target_crop = transforms.Compose([
+            transforms.Resize((192, 192))
+        ])
+        self.to_tensor = transforms.ToTensor()
+
+    def __len__(self):
+        return len(self.path)
+
+    def __getitem__(self, idx):
+        path = self.path[idx]
+        pil_image = Image.open(path)
+        pil_image.load()
+        pil_image = pil_image.convert("RGB")
+        pil_image = self.target_crop(pil_image)
+        target_img = np.array(pil_image)
+        target_img = target_img / 127.5 - 1
+        input_img = np.array(self.input_crop(pil_image))
+        input_img = input_img / 127.5 - 1
+        return self.to_tensor(input_img), self.to_tensor(target_img)
+
 
 def denorm_img(tensor):
     _mean = torch.tensor([0.5044838, 0.5044838, 0.5044838]).unsqueeze(-1).unsqueeze(-1).unsqueeze(0)
@@ -234,14 +253,23 @@ def denorm_img(tensor):
     tensor = np.clip(tensor[0].numpy(), 0, 1)
     return tensor
 
+
+def get_local_rgb(tensor_pred, tensor_origin, type_):
+    if type_ == '1x':
+        p = 32
+    elif type_ == '2x':
+        p = 53
+    else:
+        p = 68
+    tensor_pred[:, :, p:-p, p:-p] = tensor_origin[:, :, p:-p, p:-p]
+    return tensor_pred
+
+
 def sampling(args, config):
     init_distributed_mode(args)
     # args.gpu = 'cuda:1'
     autoencoder = libs.autoencoder.get_model("assets/stable-diffusion/autoencoder_kl.pth")
     autoencoder.to(args.gpu)
-    print("載入 Depth Anything V2 進行動態推論 (確保零資訊洩漏)...")
-    depth_estimator = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf",
-                               device=args.gpu)
     train_state = utils.initialize_train_state(config, args.gpu)
     train_state.resume(config.ckpt_root)
     nnet = train_state.nnet
@@ -257,13 +285,16 @@ def sampling(args, config):
     prime_target_pos = torch.FloatTensor(calculate_sin_cos(target, anchor)).to(args.gpu)
     dataset = FlickrDataset(size=args.size)
     sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=False)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size // 8, shuffle=False, num_workers=args.workers, sampler=sampler, drop_last=False)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size // 8, shuffle=False, num_workers=args.workers,
+                            sampler=sampler, drop_last=False)
     type_ = args.eval_dir.split('/')[-2]
     print(f"Start sampling..., type: {type_}")
     # o_scores, g_scores = [], []
     patch_mean, patch_std = 0.5044838, 0.1355051
-    transform_out = transforms.Normalize(mean=torch.tensor((patch_mean,patch_mean,patch_mean)),  std=torch.tensor((patch_std,patch_std,patch_std)))
+    transform_out = transforms.Normalize(mean=torch.tensor((patch_mean, patch_mean, patch_mean)),
+                                         std=torch.tensor((patch_std, patch_std, patch_std)))
     # for batch_idx, (input_img, target_img) in tqdm(enumerate(dataloader)):
+    #     # sampler.set_epoch(0)
     #     input_img = input_img.to(args.gpu).float()
     #     target_img = target_img.to(args.gpu).float()
     #     prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
@@ -273,78 +304,64 @@ def sampling(args, config):
     #     kwargs = {'conditions': [encode_anchor, prime_target_position]}
     #     model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
     #     dpm_solver = DPM_Solver(model_fn, noise_schedule)
-    #     z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=False)
+    #
+    #     start = time.time()
+    #     z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=True)
     #     end = time.time()
+    #
     #     pred_target = decode(z, autoencoder)
     #
     #     pred_target = unpreprocess(pred_target)
-    #     input_img = unpreprocess(input_img)
-    #
-    #     pred_target = transform_out(pred_target)
-    #     input_img = transform_out(input_img)
-    #     for i in range(pred_target.size(0)):
-    #         index = batch_idx * args.batch_size + i + args.rank * pred_target.size(0)
-    #         plt.imsave(f'{args.eval_dir}/gen/{index}.png', denorm_img(pred_target[i:i + 1]), vmin=0, vmax=1)
-    #         plt.imsave(f'{args.eval_dir}/ori/{index}.png', denorm_img(input_img[i:i + 1]), vmin=0, vmax=1)
+    #     target_img = unpreprocess(target_img)
+    #     pred_copy = get_local_rgb(pred_target.clone(), target_img, type_)
     for batch_idx, (input_img, target_img) in tqdm(enumerate(dataloader)):
+        # sampler.set_epoch(0)
         input_img = input_img.to(args.gpu).float()
         target_img = target_img.to(args.gpu).float()
 
-        # =====================================================================
-        # === 【嚴謹防弊】：動態在「已經裁切好」的輸入小圖上算景深 ===
-        # =====================================================================
-        input_depths = []
-        for i in range(input_img.size(0)):
-            # 將 [-1, 1] 的 Tensor 轉回純影像格式
-            single_rgb = (input_img[i].cpu().numpy().transpose(1, 2, 0) + 1.0) * 127.5
-            single_rgb = np.clip(single_rgb, 0, 255).astype(np.uint8)
-            pil_img = Image.fromarray(single_rgb)
-
-            # 萃取單獨這張小圖的景深 (絕對看不見右半邊，保證無洩漏！)
-            depth_out = depth_estimator(pil_img)["depth"]
-            depth_array = np.array(depth_out)
-            depth_norm = cv2.normalize(depth_array, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-
-            # 轉回 Tensor [-1, 1]
-            depth_tensor = torch.from_numpy(depth_norm).float().unsqueeze(0) / 127.5 - 1.0
-            input_depths.append(depth_tensor)
-
-        # 疊合成 4 通道 [B, 4, H, W]
-        input_depth_batch = torch.stack(input_depths).to(args.gpu)
-        input_4ch = torch.cat([input_img, input_depth_batch], dim=1)
-        # =====================================================================
-
         prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
 
-        # 餵給 encode 的是我們剛組裝好的 4 通道 input_4ch！
-        encode_anchor = encode(input_4ch, autoencoder)
+        encode_anchor = encode(input_img, autoencoder)
         z_init = torch.randn(encode_anchor.size(), device=args.gpu)
         noise_schedule = NoiseScheduleVP(schedule='linear')
         kwargs = {'conditions': [encode_anchor, prime_target_position]}
         model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
         dpm_solver = DPM_Solver(model_fn, noise_schedule)
-        z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=False)
+
+        start = time.time()
+        # 注意：evaluate2.py 這裡是 50 步，evaluate.py 這裡是 500 步，維持原本的設定即可
+        z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=True)
+        end = time.time()
 
         pred_target = decode(z, autoencoder)
 
-        # === 儲存時切回 3 通道 ===
-        pred_target = pred_target[:, :3, :, :]
-        input_img_rgb = input_img[:, :3, :, :]
-
         pred_target = unpreprocess(pred_target)
-        input_img = unpreprocess(input_img_rgb)
+        target_img = unpreprocess(target_img)
+        pred_copy = get_local_rgb(pred_target.clone(), target_img, type_)
+
+        # ... 底下保留原本的 os.makedirs 和 plt.imsave 等程式碼 ...
+        directories = [f'{args.eval_dir}/gen', f'{args.eval_dir}/ori', f'{args.eval_dir}/copy']
+
+        for directory in directories:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
 
         pred_target = transform_out(pred_target)
-        input_img = transform_out(input_img)
+        target_img = transform_out(target_img)
+        pred_copy = transform_out(pred_copy)
         for i in range(pred_target.size(0)):
             index = batch_idx * args.batch_size + i + args.rank * pred_target.size(0)
             plt.imsave(f'{args.eval_dir}/gen/{index}.png', denorm_img(pred_target[i:i + 1]), vmin=0, vmax=1)
-            plt.imsave(f'{args.eval_dir}/ori/{index}.png', denorm_img(input_img[i:i + 1]), vmin=0, vmax=1)
+            plt.imsave(f'{args.eval_dir}/ori/{index}.png', denorm_img(target_img[i:i + 1]), vmin=0, vmax=1)
+            plt.imsave(f'{args.eval_dir}/copy/{index}.png', denorm_img(pred_copy[i:i + 1]), vmin=0, vmax=1)
+            # plt.imsave(f'{args.eval_dir}/gen/{index}.png', pred_target[i:i + 1].cpu(), vmin=0, vmax=1)
+            # plt.imsave(f'{args.eval_dir}/ori/{index}.png', target_img[i:i + 1].cpu(), vmin=0, vmax=1)
     print(f"Finished sampling")
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('OutDiff', add_help=False)
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--target_expansion', nargs='+', type=float, default=(0.25, 0.25, 0.25, 0.25))
     parser.add_argument('--size', type=float, default=56)
     parser.add_argument('--eval_dir', type=str, default="./eval_dir/scenery/3x/")
@@ -355,6 +372,7 @@ def get_args_parser():
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
     return parser
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('OutDiff', parents=[get_args_parser()])
@@ -367,7 +385,7 @@ if __name__ == '__main__':
         from configs.building192_large import get_config
     config = get_config()
     config.config_name = args.config
-    config.hparams = "formal"
+    config.hparams = "x0pred"
     config.workdir = os.path.join('workdir', config.config_name, config.hparams)
     config.ckpt_root = os.path.join(config.workdir, 'ckpts')
     config.sample_dir = os.path.join(config.workdir, 'samples')

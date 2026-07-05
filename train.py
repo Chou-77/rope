@@ -1,4 +1,4 @@
-import sde
+import sde_v
 import ml_collections
 import torch
 from torch import multiprocessing as mp

@@ -11,7 +11,7 @@ def get_config():
     config = ml_collections.ConfigDict()
 
     config.seed = 1234
-    config.pred = 'noise_pred'
+    config.pred = 'v_pred'
     config.z_shape = (4, 24, 24)
 
     config.autoencoder = d(
@@ -31,7 +31,7 @@ def get_config():
         name='adamw',
         lr=0.0002,
         weight_decay=0.03,
-        betas=(0.99, 0.99),
+        betas=(0.9, 0.999),
     )
 
     config.lr_scheduler = d(
@@ -43,7 +43,7 @@ def get_config():
         name='uvit',
         img_size=24,
         patch_size=2,
-        in_chans=5,
+        in_chans=4,
         embed_dim=1024,
         depth=20,
         num_heads=16,
