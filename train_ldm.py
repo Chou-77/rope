@@ -1,4 +1,4 @@
-import sde_v
+import sde
 import ml_collections
 import torch
 from torch import multiprocessing as mp
@@ -17,7 +17,7 @@ import builtins
 import os
 import wandb
 import libs.autoencoder
-import math  # <--- 【新增】引入 math 以計算 Cosine 衰減權重
+
 
 
 def train(config):
@@ -66,23 +66,14 @@ def train(config):
     autoencoder = libs.autoencoder.get_model(config.autoencoder.pretrained_path)
     autoencoder.to(device)
 
-    # @torch.cuda.amp.autocast()
-    # def encode(_batch):
-    #     return autoencoder.encode(_batch)
-    #
-    # @torch.cuda.amp.autocast()
-    # def decode(_batch):
-    #     return autoencoder.decode(_batch)
     @torch.cuda.amp.autocast()
     def encode(_batch):
-        # 完全拋棄景深，只取前 3 個通道 (RGB) 給 Autoencoder
-        rgb = _batch[:, :3, :, :]
-        return autoencoder.encode(rgb)
+        return autoencoder.encode(_batch)
 
     @torch.cuda.amp.autocast()
     def decode(_batch):
-        # _batch 裡面現在只有純 Latent RGB，直接解碼
         return autoencoder.decode(_batch)
+
 
     def get_data_generator():
         while True:
@@ -92,11 +83,9 @@ def train(config):
     data_generator = get_data_generator()
 
     # set the score_model to train
-    # score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
-    # score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
-    # 【修改】：改用 get_sde 呼叫 'vpsde_ztsnr'，強制啟動 Zero-Terminal SNR
-    score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.get_sde('vpsde_ztsnr'))
-    score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.get_sde('vpsde_ztsnr'))
+    score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
+    score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
+
 
     def train_step(prime_target, prime_anchor_view, prime_targe_pos, encode_anchor, encode_target):
         _metrics = dict()

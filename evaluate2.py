@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 from PIL import Image
 from torchvision.transforms import transforms
-import sde_v
+import sde
 import ml_collections
 import torch
 from torch import multiprocessing as mp
@@ -35,19 +35,12 @@ from eval_dir.inception import inception_score
 import cv2
 from transformers import pipeline
 
-# def encode(_batch, autoencoder):
-#     return autoencoder.encode(_batch)
-#
-# def decode(_batch, autoencoder):
-#     return autoencoder.decode(_batch)
 def encode(_batch, autoencoder):
-    # 只取前 3 個通道 (RGB) 給 Autoencoder
-    rgb = _batch[:, :3, :, :]
-    return autoencoder.encode(rgb)
+    return autoencoder.encode(_batch)
 
 def decode(_batch, autoencoder):
-    # _batch 裡面現在只有純 Latent RGB，直接解碼
     return autoencoder.decode(_batch)
+
 def unpreprocess(v):
     v = 0.5 * (v + 1.)
     v.clamp_(0., 1.)

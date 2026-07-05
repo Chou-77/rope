@@ -11,7 +11,7 @@ def get_config():
     config = ml_collections.ConfigDict()
 
     config.seed = 1234
-    config.pred = 'v_pred'
+    config.pred = 'noise_pred'
     config.z_shape = (4, 24, 24)
 
     config.autoencoder = d(
