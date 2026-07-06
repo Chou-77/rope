@@ -195,7 +195,7 @@ def train(config):
 
                 eval_dir = f"./eval_dir/scenery/1x_step{train_state.step}/"
 
-                eval_cmd = f"torchrun --nproc_per_node=1 evaluate2.py --target_expansion 0.25 0.25 0.25 0.25 --eval_dir {eval_dir} --size 128 --config flickr192_large"
+                eval_cmd = f"torchrun --nproc_per_node=1 evaluate.py --target_expansion 0.25 0.25 0.25 0.25 --eval_dir {eval_dir} --size 128 --config flickr192_large"
                 print(f"正在產圖: {eval_cmd}")
                 subprocess.run(eval_cmd, shell=True)
 

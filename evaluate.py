@@ -35,20 +35,16 @@ from eval_dir.inception import inception_score
 import cv2
 from transformers import pipeline
 
-
 def encode(_batch, autoencoder):
     return autoencoder.encode(_batch)
 
 def decode(_batch, autoencoder):
     return autoencoder.decode(_batch)
 
-
-
 def unpreprocess(v):
     v = 0.5 * (v + 1.)
     v.clamp_(0., 1.)
     return v
-
 
 def destandard(v):
     v = (v + 1) * 127.5
@@ -75,7 +71,6 @@ def calculate_sin_cos(lpos, gpos, grid_size=12):
     # 展平為 [L, 2] 並回傳
     return grid.reshape(-1, 2)
 
-
 def calculate_input_pos(target):
     init_location = (200, 200, 256, 256)
     top, down, left, right = target
@@ -85,7 +80,6 @@ def calculate_input_pos(target):
     w = int(256 * (left + right)) + 256
     target = (i, j, h, w)
     return init_location, target
-
 
 def setup_for_distributed(is_master):
     """
@@ -100,7 +94,6 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
-
 
 def init_distributed_mode(args):
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -121,7 +114,7 @@ def init_distributed_mode(args):
         host_name = stdout.decode().splitlines()[0]
         args.dist_url = f'tcp://{host_name}:15752'
     if 'MASTER_ADDR' in os.environ and 'MASTER_PORT' in os.environ:
-        args.dist_url = f'tcp://' + str(os.environ['MASTER_ADDR']) + ':' + str(os.environ['MASTER_PORT'])
+        args.dist_url = f'tcp://'+str(os.environ['MASTER_ADDR']) + ':' +str(os.environ['MASTER_PORT'])
     else:
         args.dist_url = f'tcp://localhost:27461'
     # args.dist_url = f'tcp://localhost:27461'
@@ -137,11 +130,10 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
     print("Initialization finish")
 
-
 class WikiArtDataset(Dataset):
     def __init__(self, path='./dataset/wikiart/test/', size=56):
         f_name = os.listdir(path)
-        self.path = [path + str(f_name[i]) for i in range(len(f_name))]
+        self.path = [path+str(f_name[i]) for i in range(len(f_name))]
         print("Total evaluation images: ", len(self.path))
         self.input_crop = transforms.Compose([
             transforms.CenterCrop((size, size)),
@@ -151,10 +143,8 @@ class WikiArtDataset(Dataset):
             transforms.Resize((192, 192))
         ])
         self.to_tensor = transforms.ToTensor()
-
     def __len__(self):
         return len(self.path)
-
     def __getitem__(self, idx):
         path = self.path[idx]
         pil_image = Image.open(path)
@@ -167,12 +157,11 @@ class WikiArtDataset(Dataset):
         input_img = input_img / 127.5 - 1
         return self.to_tensor(input_img), self.to_tensor(target_img)
 
-
 class BuildingDataset(Dataset):
     def __init__(self, path='./dataset/building/test/', size=56):
-        f_name = os.listdir(path)
+        f_name = os.listdir(path)        
         self.path = []
-        f_path = [path + str(f_name[i]) for i in range(len(f_name))]
+        f_path = [path+str(f_name[i]) for i in range(len(f_name))]
         for i in range(len(f_path)):
             try:
                 pil_image = Image.open(f_path[i])
@@ -189,10 +178,8 @@ class BuildingDataset(Dataset):
             transforms.Resize((192, 192))
         ])
         self.to_tensor = transforms.ToTensor()
-
     def __len__(self):
         return len(self.path)
-
     def __getitem__(self, idx):
         path = self.path[idx]
         pil_image = Image.open(path)
@@ -205,12 +192,11 @@ class BuildingDataset(Dataset):
         input_img = input_img / 127.5 - 1
         return self.to_tensor(input_img), self.to_tensor(target_img)
 
-
 class FlickrDataset(Dataset):
     def __init__(self, path='./dataset/scenery/test/', size=56):
         f_name = os.listdir(path)
         self.path = [os.path.join(path, f) for f in f_name if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        # self.path = [path+str(f_name[i]) for i in range(len(f_name)) if int(f_name[i].split('_')[-1].split('.')[0].replace(',', ''))>5040]
+        #self.path = [path+str(f_name[i]) for i in range(len(f_name)) if int(f_name[i].split('_')[-1].split('.')[0].replace(',', ''))>5040]
         print("Total evaluation images: ", len(self.path))
         self.input_crop = transforms.Compose([
             transforms.CenterCrop((size, size)),
@@ -220,10 +206,8 @@ class FlickrDataset(Dataset):
             transforms.Resize((192, 192))
         ])
         self.to_tensor = transforms.ToTensor()
-
     def __len__(self):
         return len(self.path)
-
     def __getitem__(self, idx):
         path = self.path[idx]
         pil_image = Image.open(path)
@@ -236,7 +220,6 @@ class FlickrDataset(Dataset):
         input_img = input_img / 127.5 - 1
         return self.to_tensor(input_img), self.to_tensor(target_img)
 
-
 def denorm_img(tensor):
     _mean = torch.tensor([0.5044838, 0.5044838, 0.5044838]).unsqueeze(-1).unsqueeze(-1).unsqueeze(0)
     _std = torch.tensor([0.1355051, 0.1355051, 0.1355051]).unsqueeze(-1).unsqueeze(-1).unsqueeze(0)
@@ -244,7 +227,6 @@ def denorm_img(tensor):
     tensor = rearrange(tensor[0:1], 'b c w h -> b w h c').detach().cpu()
     tensor = np.clip(tensor[0].numpy(), 0, 1)
     return tensor
-
 
 def get_local_rgb(tensor_pred, tensor_origin, type_):
     if type_ == '1x':
@@ -255,7 +237,6 @@ def get_local_rgb(tensor_pred, tensor_origin, type_):
         p = 68
     tensor_pred[:, :, p:-p, p:-p] = tensor_origin[:, :, p:-p, p:-p]
     return tensor_pred
-
 
 def sampling(args, config):
     init_distributed_mode(args)
@@ -277,52 +258,27 @@ def sampling(args, config):
     prime_target_pos = torch.FloatTensor(calculate_sin_cos(target, anchor)).to(args.gpu)
     dataset = FlickrDataset(size=args.size)
     sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=False)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size // 8, shuffle=False, num_workers=args.workers,
-                            sampler=sampler, drop_last=False)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size // 8, shuffle=False, num_workers=args.workers, sampler=sampler, drop_last=False)
     type_ = args.eval_dir.split('/')[-2]
     print(f"Start sampling..., type: {type_}")
     # o_scores, g_scores = [], []
     patch_mean, patch_std = 0.5044838, 0.1355051
-    transform_out = transforms.Normalize(mean=torch.tensor((patch_mean, patch_mean, patch_mean)),
-                                         std=torch.tensor((patch_std, patch_std, patch_std)))
-    # for batch_idx, (input_img, target_img) in tqdm(enumerate(dataloader)):
-    #     # sampler.set_epoch(0)
-    #     input_img = input_img.to(args.gpu).float()
-    #     target_img = target_img.to(args.gpu).float()
-    #     prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
-    #     encode_anchor = encode(input_img, autoencoder)
-    #     z_init = torch.randn(encode_anchor.size(), device=args.gpu)
-    #     noise_schedule = NoiseScheduleVP(schedule='linear')
-    #     kwargs = {'conditions': [encode_anchor, prime_target_position]}
-    #     model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
-    #     dpm_solver = DPM_Solver(model_fn, noise_schedule)
-    #
-    #     start = time.time()
-    #     z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=True)
-    #     end = time.time()
-    #
-    #     pred_target = decode(z, autoencoder)
-    #
-    #     pred_target = unpreprocess(pred_target)
-    #     target_img = unpreprocess(target_img)
-    #     pred_copy = get_local_rgb(pred_target.clone(), target_img, type_)
+    transform_out = transforms.Normalize(mean=torch.tensor((patch_mean,patch_mean,patch_mean)),  std=torch.tensor((patch_std,patch_std,patch_std)))
     for batch_idx, (input_img, target_img) in tqdm(enumerate(dataloader)):
+        # sampler.set_epoch(0)
         input_img = input_img.to(args.gpu).float()
         target_img = target_img.to(args.gpu).float()
-
         prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
         encode_anchor = encode(input_img, autoencoder)
-
-        # === 唯一需要的推論代碼 (使用 Euler Maruyama) ===
         z_init = torch.randn(encode_anchor.size(), device=args.gpu)
+        noise_schedule = NoiseScheduleVP(schedule='linear')
+        kwargs = {'conditions': [encode_anchor, prime_target_position]}
+        model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
+        dpm_solver = DPM_Solver(model_fn, noise_schedule)
 
         start = time.time()
-        # 原生完美支援 zTSNR 和 v-prediction 的採樣器
-        ode = sde.ODE(score_model_ema)
-        z = sde.euler_maruyama(ode, x_init=z_init, sample_steps=500, conditions=[encode_anchor, prime_target_position],
-                               verbose=False)
+        z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=False)
         end = time.time()
-        # ==========================================
 
         pred_target = decode(z, autoencoder)
 
@@ -330,7 +286,6 @@ def sampling(args, config):
         target_img = unpreprocess(target_img)
         pred_copy = get_local_rgb(pred_target.clone(), target_img, type_)
 
-        # ... 底下保留原本的 os.makedirs 和 plt.imsave 等程式碼 ...
         directories = [f'{args.eval_dir}/gen', f'{args.eval_dir}/ori', f'{args.eval_dir}/copy']
 
         for directory in directories:
@@ -349,7 +304,6 @@ def sampling(args, config):
             # plt.imsave(f'{args.eval_dir}/ori/{index}.png', target_img[i:i + 1].cpu(), vmin=0, vmax=1)
     print(f"Finished sampling")
 
-
 def get_args_parser():
     parser = argparse.ArgumentParser('OutDiff', add_help=False)
     parser.add_argument('--batch_size', type=int, default=256)
@@ -363,7 +317,6 @@ def get_args_parser():
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
     return parser
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('OutDiff', parents=[get_args_parser()])
