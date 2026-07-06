@@ -188,7 +188,7 @@ class ImageDataset(Dataset):
         return grid.reshape(-1, 2)
 
     def __getitem__(self, idx):
-        # 1. 同時讀取 RGB (3通道) 與 Depth (1通道黑白)
+
         path = self.image_paths[idx]
 
 
@@ -209,12 +209,11 @@ class ImageDataset(Dataset):
         anchor_img_rgb = np.array(anchor_img_rgb) / 127.5 - 1.0  # [H, W, 3]
         target_img_rgb = np.array(target_img_rgb) / 127.5 - 1.0  # [H, W, 3]
 
-        # 5. 轉換為 PyTorch 習慣的 [C, H, W] 排列
-        anchor_4ch = np.transpose(anchor_img_rgb, [2, 0, 1])  # [4, H, W]
-        target_4ch = np.transpose(target_img_rgb , [2, 0, 1])  # [4, H, W]
+        anchor_3ch = np.transpose(anchor_img_rgb, [2, 0, 1])  # [4, H, W]
+        target_3ch = np.transpose(target_img_rgb , [2, 0, 1])  # [4, H, W]
 
         # 回傳 4 通道 Target, 4 通道 Anchor, 以及相對座標編碼
-        return target_4ch, anchor_4ch, target_pos_embed
+        return target_3ch, anchor_3ch, target_pos_embed
 
 def _list_image_files_recursively(data_dir):
     results = []

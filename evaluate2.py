@@ -264,53 +264,28 @@ def sampling(args, config):
     # o_scores, g_scores = [], []
     patch_mean, patch_std = 0.5044838, 0.1355051
     transform_out = transforms.Normalize(mean=torch.tensor((patch_mean,patch_mean,patch_mean)),  std=torch.tensor((patch_std,patch_std,patch_std)))
-    # for batch_idx, (input_img, target_img) in tqdm(enumerate(dataloader)):
-    #     # sampler.set_epoch(0)
-    #     input_img = input_img.to(args.gpu).float()
-    #     target_img = target_img.to(args.gpu).float()
-    #     prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
-    #     encode_anchor = encode(input_img, autoencoder)
-    #     z_init = torch.randn(encode_anchor.size(), device=args.gpu)
-    #     noise_schedule = NoiseScheduleVP(schedule='linear')
-    #     kwargs = {'conditions': [encode_anchor, prime_target_position]}
-    #     model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
-    #     dpm_solver = DPM_Solver(model_fn, noise_schedule)
-    #
-    #     start = time.time()
-    #     z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=True)
-    #     end = time.time()
-    #
-    #     pred_target = decode(z, autoencoder)
-    #
-    #     pred_target = unpreprocess(pred_target)
-    #     target_img = unpreprocess(target_img)
-    #     pred_copy = get_local_rgb(pred_target.clone(), target_img, type_)
     for batch_idx, (input_img, target_img) in tqdm(enumerate(dataloader)):
+        # sampler.set_epoch(0)
         input_img = input_img.to(args.gpu).float()
         target_img = target_img.to(args.gpu).float()
-
         prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
         encode_anchor = encode(input_img, autoencoder)
-
-        # === 唯一需要的推論代碼 (使用 Euler Maruyama) ===
         z_init = torch.randn(encode_anchor.size(), device=args.gpu)
+        noise_schedule = NoiseScheduleVP(schedule='linear')
+        kwargs = {'conditions': [encode_anchor, prime_target_position]}
+        model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
+        dpm_solver = DPM_Solver(model_fn, noise_schedule)
 
         start = time.time()
-        # 原生完美支援 zTSNR 和 v-prediction 的採樣器
-        ode = sde.ODE(score_model_ema)
-        z = sde.euler_maruyama(ode, x_init=z_init, sample_steps=50, conditions=[encode_anchor, prime_target_position],
-                               verbose=False)
+        z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=False)
         end = time.time()
-        # ==========================================
 
         pred_target = decode(z, autoencoder)
-
 
         pred_target = unpreprocess(pred_target)
         target_img = unpreprocess(target_img)
         pred_copy = get_local_rgb(pred_target.clone(), target_img, type_)
 
-        # ... 底下保留原本的 os.makedirs 和 plt.imsave 等程式碼 ...
         directories = [f'{args.eval_dir}/gen', f'{args.eval_dir}/ori', f'{args.eval_dir}/copy']
 
         for directory in directories:
