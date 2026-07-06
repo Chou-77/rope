@@ -153,7 +153,7 @@ class ImageDataset(Dataset):
     ):
         super().__init__()
         self.resolution = resolution
-        self.image_paths = []
+        self.image_paths = image_paths
 
         rgb_folder_name = 'images'
 

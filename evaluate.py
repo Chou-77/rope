@@ -275,6 +275,7 @@ def sampling(args, config):
         target_img = target_img.to(args.gpu).float()
         prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
         encode_anchor = encode(input_img, autoencoder)
+        orig_bs = input_img.size(0)
         if args.cfg:
             encode_anchor = torch.cat([encode_anchor, torch.ones_like(encode_anchor)], dim=0)
             prime_target_position = torch.cat([prime_target_position, torch.ones_like(prime_target_position)], dim=0)
@@ -293,7 +294,7 @@ def sampling(args, config):
         else:
             pred_target = decode(z, autoencoder)
 
-        pred_target = decode(z, autoencoder)
+        # pred_target = decode(z, autoencoder)
 
         pred_target = unpreprocess(pred_target)
         target_img = unpreprocess(target_img)
@@ -329,7 +330,9 @@ def get_args_parser():
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
-    parser.add_argument('--cfg', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--cfg', dest='cfg', action='store_true')
+    parser.add_argument('--no-cfg', dest='cfg', action='store_false')
+    parser.set_defaults(cfg=True)
     parser.add_argument('--cfg_scale', type=float, default=1.3)
     return parser
 
