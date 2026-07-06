@@ -324,3 +324,19 @@ class UViT(nn.Module):
         x = unpatchify(x, self.in_chans)
         x = self.final_layer(x)
         return x
+
+    def classifier_free_forward(self, x, conditions, timesteps, cfg_scale=1.3):
+        half = x[: len(x) // 2]
+        combined = torch.cat([half, half], dim=0)
+
+        model_out = self.forward(combined, conditions, timesteps)
+
+        pred, rest = model_out[:, :self.in_chans], model_out[:, self.in_chans:]
+
+        cond_pred, uncond_pred = torch.split(pred, len(pred) // 2, dim=0)
+
+        guided_pred = uncond_pred + cfg_scale * (cond_pred - uncond_pred)
+
+        pred = torch.cat([guided_pred, guided_pred], dim=0)
+
+        return torch.cat([pred, rest], dim=1)

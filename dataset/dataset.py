@@ -148,7 +148,8 @@ class ImageDataset(Dataset):
             embed_dim,
             grid_size,
             anchor_crop_scale=(0.15, 0.40),
-            target_crop_scale=(0.8, 1.0)
+            target_crop_scale=(0.8, 1.0),
+            p_uncond=0.2
     ):
         super().__init__()
         self.resolution = resolution
@@ -163,6 +164,7 @@ class ImageDataset(Dataset):
                                                  interpolation=transforms.InterpolationMode.BILINEAR)
         self.target_rcr = RandomResizedCropCoord(resolution, scale=target_crop_scale,
                                                  interpolation=transforms.InterpolationMode.BILINEAR)
+        self.p_uncond = p_uncond
 
     def __len__(self):
         return len(self.image_paths)
@@ -212,6 +214,10 @@ class ImageDataset(Dataset):
         anchor_3ch = np.transpose(anchor_img_rgb, [2, 0, 1])  # [4, H, W]
         target_3ch = np.transpose(target_img_rgb , [2, 0, 1])  # [4, H, W]
 
+        if random.random() < self.p_uncond:
+            anchor_3ch = np.ones_like(anchor_3ch, dtype=np.float32)
+            target_pos_embed = np.ones_like(target_pos_embed, dtype=np.float32)
+
         # 回傳 4 通道 Target, 4 通道 Anchor, 以及相對座標編碼
         return target_3ch, anchor_3ch, target_pos_embed
 
@@ -253,7 +259,7 @@ class WikiArt(DatasetFactory):
         train_labels = [sorted_classes[x] for x in class_names]
         print('Finish counting WikiArt files, total images: %d' % len(train_files))
 
-        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.2, 0.5), target_crop_scale=(0.8, 1.0))
+        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.05, 0.5), target_crop_scale=(0.5, 1.0),p_uncond=0.1)
 
         self.resolution = resolution
 
@@ -289,7 +295,7 @@ class Flickr(DatasetFactory):
         train_labels = [sorted_classes[x] for x in class_names]
         print('Finish counting FLickr files, total images: %d' % len(train_files))
 
-        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.2, 0.5), target_crop_scale=(0.8, 1.0))
+        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.05, 0.5), target_crop_scale=(0.5, 1.0), p_uncond=0.15)
 
         # val_files = _list_image_files_recursively(path)
         # train_labels = [sorted_classes[x] for x in class_names]
@@ -327,7 +333,7 @@ class Building(DatasetFactory):
         train_labels = [sorted_classes[x] for x in class_names]
         print('Finish counting Building files, total images: %d' % len(train_files))
 
-        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.2, 0.5), target_crop_scale=(0.8, 1.0))
+        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.05, 0.6), target_crop_scale=(0.6, 1.0), p_uncond=0.1)
 
         # val_files = _list_image_files_recursively(path)
         # train_labels = [sorted_classes[x] for x in class_names]

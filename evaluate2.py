@@ -249,12 +249,7 @@ def sampling(args, config):
     nnet_ema = train_state.nnet_ema
     nnet_ema.eval()
     score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
-    if args.cfg:
-        score_model_ema = sde.ScoreModel(nnet_ema.classifier_free_forward, pred=config.pred, sde=sde.VPSDE())
-    else:
-        score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
-    # top, down, left, right
-    # score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
+    score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
     # top, down, left, right
     # target_expansion = (0.1, 0.1, 0.1, 0.1)
     target_expansion = args.target_expansion
@@ -275,9 +270,6 @@ def sampling(args, config):
         target_img = target_img.to(args.gpu).float()
         prime_target_position = prime_target_pos.unsqueeze(0).repeat(input_img.size(0), 1, 1).float()
         encode_anchor = encode(input_img, autoencoder)
-        if args.cfg:
-            encode_anchor = torch.cat([encode_anchor, torch.ones_like(encode_anchor)], dim=0)
-            prime_target_position = torch.cat([prime_target_position, torch.ones_like(prime_target_position)], dim=0)
         z_init = torch.randn(encode_anchor.size(), device=args.gpu)
         noise_schedule = NoiseScheduleVP(schedule='linear')
         kwargs = {'conditions': [encode_anchor, prime_target_position]}
@@ -287,11 +279,6 @@ def sampling(args, config):
         start = time.time()
         z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=False)
         end = time.time()
-
-        if args.cfg:
-            pred_target = decode(z, autoencoder)[:z.size(0) // 2]
-        else:
-            pred_target = decode(z, autoencoder)
 
         pred_target = decode(z, autoencoder)
 
@@ -329,8 +316,6 @@ def get_args_parser():
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
-    parser.add_argument('--cfg', action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument('--cfg_scale', type=float, default=1.3)
     return parser
 
 if __name__ == '__main__':
