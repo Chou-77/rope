@@ -31,6 +31,7 @@ python3 -m torch.distributed.launch --nproc_per_node=8 \
                 --config flickr192_large
 
 python eval_dir/inception.py --path ./eval_dir/scenery/1x/gen/
+python eval_dir/inception.py --path ./eval_dir/scenery/1x_step75000/gen/
 python eval_dir/inception.py --path ./eval_dir/scenery/1x/copy/
 python -m pytorch_fid ./eval_dir/scenery/1x/ori/ ./eval_dir/scenery/1x/copy/
 python -m pytorch_fid ./eval_dir/scenery/1x/ori/ ./eval_dir/scenery/1x/gen/
