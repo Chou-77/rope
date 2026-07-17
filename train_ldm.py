@@ -1,3 +1,4 @@
+import math
 import sde
 import ml_collections
 import torch
@@ -65,6 +66,12 @@ def train(config):
 
     autoencoder = libs.autoencoder.get_model(config.autoencoder.pretrained_path)
     autoencoder.to(device)
+    autoencoder.eval()
+
+    for p in autoencoder.parameters():
+        p.requires_grad_(False)
+
+
 
     @torch.cuda.amp.autocast()
     def encode(_batch):
@@ -74,6 +81,81 @@ def train(config):
     def decode(_batch):
         return autoencoder.decode(_batch)
 
+    class DecoderFeatureHook:
+        def __init__(self, autoencoder, layer_ids=(2,)):
+            self.autoencoder = autoencoder
+            self.layer_ids = layer_ids
+            self.features = {}
+            self.handles = []
+
+            decoder = autoencoder.decoder
+
+            for i in layer_ids:
+                layer = decoder.up[i].block[-1]
+                handle = layer.register_forward_hook(self._make_hook(f"up_{i}"))
+                self.handles.append(handle)
+
+        def _make_hook(self, name):
+            def hook(module, inputs, output):
+                self.features[name] = output
+
+            return hook
+
+        def clear(self):
+            self.features = {}
+
+        def extract(self, z):
+            self.clear()
+            _ = decode(z)
+            return {k: v for k, v in self.features.items()}
+
+    def lpl_weight(step, total_steps, lambda_lpl=0.01, start=0.50, end=1.00):
+        progress = float(step) / float(total_steps)
+
+        if progress < start or progress >= end:
+            return 0.0
+
+        ratio = (progress - start) / (end - start)
+        return lambda_lpl * 0.5 * (1.0 + math.cos(math.pi * ratio))
+
+    def normalize_feature(pred_feat, target_feat, eps=1e-6):
+        mean = pred_feat.mean(dim=[2, 3], keepdim=True)
+        std = pred_feat.std(dim=[2, 3], keepdim=True).clamp_min(eps)
+
+        pred_norm = (pred_feat - mean) / std
+        target_norm = (target_feat - mean) / std
+
+        return pred_norm, target_norm
+
+    def compute_lpl_loss(pred_x0, target_x0, feature_hook):
+        # target_x0 不需要梯度
+        with torch.no_grad():
+            target_feats = {
+                k: v.detach()
+                for k, v in feature_hook.extract(target_x0).items()
+            }
+
+        # pred_x0 要保留梯度，loss 才能回傳到 nnet
+        pred_feats = feature_hook.extract(pred_x0)
+
+        loss = 0.0
+        count = 0
+
+        for k in pred_feats.keys():
+            pred_f = pred_feats[k].float()
+            target_f = target_feats[k].float()
+
+            pred_n, target_n = normalize_feature(pred_f, target_f)
+
+            loss = loss + (pred_n - target_n).pow(2).mean()
+            count += 1
+
+        return loss / max(count, 1)
+
+    lpl_feature_hook = DecoderFeatureHook(
+        autoencoder,
+        layer_ids=tuple(config.lpl.layers),
+    )
 
     def get_data_generator():
         while True:
@@ -91,30 +173,58 @@ def train(config):
         _metrics = dict()
 
         with accelerator.accumulate(nnet):
-            if config.train.mode == 'uncond':
-                _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
-                loss = sde.LSimple(score_model, _z, pred=config.pred)
-            elif config.train.mode == 'cond':
+            # if config.train.mode == 'uncond':
+            #     _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
+            #     loss = sde.LSimple(score_model, _z, pred=config.pred)
+            if config.train.mode == 'cond':
                 _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
 
-                if config.get('lowfreq', None) is not None and config.lowfreq.enable:
-                    loss, lowfreq_metrics = sde.LSimpleLowFreqX0(
+                if config.get('lpl', None) is not None and config.lpl.enable:
+                    loss_main, pred_x0, diffusion_t = sde.LSimpleReturnX0(
                         score_model,
                         _z,
                         pred=config.pred,
                         conditions=[encode_anchor, prime_targe_pos],
-                        step=train_state.step,
-                        total_steps=config.train.n_steps,
-                        lambda_low=config.lowfreq.lambda_low,
-                        schedule_start=config.lowfreq.schedule_start,
-                        schedule_end=config.lowfreq.schedule_end,
-                        t_min=config.lowfreq.t_min,
-                        t_max=config.lowfreq.t_max,
-                        kernel_size=config.lowfreq.kernel_size,
                     )
 
-                    for k, v in lowfreq_metrics.items():
-                        _metrics[k] = accelerator.gather(v.detach()).mean()
+                    w_lpl = lpl_weight(
+                        step=train_state.step,
+                        total_steps=config.train.n_steps,
+                        lambda_lpl=config.lpl.lambda_lpl,
+                        start=config.lpl.schedule_start,
+                        end=config.lpl.schedule_end,
+                    )
+
+                    alpha = score_model.sde.cum_alpha(diffusion_t)
+                    beta = score_model.sde.cum_beta(diffusion_t)
+                    snr = alpha / beta.clamp_min(1e-8)
+
+                    snr_mask = snr > config.lpl.snr_threshold
+
+                    if w_lpl > 0.0 and snr_mask.any():
+                        loss_lpl = compute_lpl_loss(
+                            pred_x0[snr_mask],
+                            _z[snr_mask],
+                            lpl_feature_hook,
+                        )
+
+                        loss = loss_main + w_lpl * loss_lpl
+
+                        _metrics['loss_main'] = accelerator.gather(loss_main.detach()).mean()
+                        _metrics['loss_lpl'] = accelerator.gather(loss_lpl.detach()).mean()
+                        _metrics['lpl_weight'] = torch.tensor(w_lpl, device=device)
+                        _metrics['lpl_effect'] = torch.tensor(w_lpl, device=device) * loss_lpl.detach()
+                        _metrics['lpl_snr_ratio'] = accelerator.gather(snr_mask.float().detach()).mean()
+
+                    else:
+                        loss = loss_main
+
+                        _metrics['loss_main'] = accelerator.gather(loss_main.detach()).mean()
+                        _metrics['loss_lpl'] = torch.zeros((), device=device)
+                        _metrics['lpl_weight'] = torch.tensor(w_lpl, device=device)
+                        _metrics['lpl_effect'] = torch.zeros((), device=device)
+                        _metrics['lpl_snr_ratio'] = accelerator.gather(snr_mask.float().detach()).mean()
+
                 else:
                     loss = sde.LSimple(
                         score_model,
@@ -223,7 +333,7 @@ def train(config):
 
                 eval_dir = f"./eval_dir/scenery/1x_step{train_state.step}/"
 
-                eval_cmd = f"torchrun --nproc_per_node=1 evaluate.py --target_expansion 0.25 0.25 0.25 0.25 --eval_dir {eval_dir} --size 128 --config flickr192_large"
+                eval_cmd = f"torchrun --nproc_per_node=1 evaluate.py --target_expansion 0.25 0.25 0.25 0.25 --eval_dir {eval_dir} --size 128 --config flickr192_large --no-cfg"
                 print(f"正在產圖: {eval_cmd}")
                 subprocess.run(eval_cmd, shell=True)
 

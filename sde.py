@@ -288,22 +288,13 @@ def lowfreq_weight(step, total_steps, lambda_low=0.01, start=0.10, end=0.50):
     return lambda_low * 0.5 * (1.0 + math.cos(math.pi * ratio))
 
 
-def LSimpleLowFreqX0(
+def LSimpleReturnX0(
     score_model: ScoreModel,
     x0,
     conditions=None,
     pred='noise_pred',
-    step=0,
-    total_steps=80000,
-    lambda_low=0.01,
-    schedule_start=0.10,
-    schedule_end=0.50,
-    t_min=0.10,
-    t_max=0.70,
-    kernel_size=4,
 ):
-    # x0 是 target latent，不是 pixel image
-    # 這裡 detach 是避免梯度回傳到 autoencoder，訓練主體仍然是 nnet
+    # x0 是 target latent
     x0 = x0.detach()
 
     if isinstance(conditions, list):
@@ -314,77 +305,24 @@ def LSimpleLowFreqX0(
     elif torch.is_tensor(conditions):
         conditions = conditions.detach()
 
-    # 跟原本 LSimple 一樣，sample diffusion timestep
     t, noise, xt = score_model.sde.sample(x0)
 
-    # 只 forward 一次，避免 noise loss 和 x0 loss 各跑一次 nnet
+    # 只 forward 一次 nnet
     model_out = score_model.predict(xt, conditions, t)
 
     if pred == 'noise_pred':
-        # 主 loss：epsilon prediction，保留原本 diffusion objective
         loss_main = mos(noise - model_out)
 
-        # 從 epsilon prediction 反推 pred_x0
-        # xt = sqrt(alpha) * x0 + sqrt(beta) * eps
-        # pred_x0 = (xt - sqrt(beta) * eps_pred) / sqrt(alpha)
         alpha = score_model.sde.cum_alpha(t)
         beta = score_model.sde.cum_beta(t)
+
         pred_x0 = stp(alpha.rsqrt(), xt) - stp((beta / alpha).sqrt(), model_out)
 
     elif pred == 'x0_pred':
-        # 如果之後你切回 x0_pred，也可以用
         pred_x0 = model_out
         loss_main = mos(x0 - pred_x0)
 
     else:
         raise NotImplementedError(pred)
 
-    # schedule：0~10% 不加，10~50% cosine decay，50% 後不加
-    w_low = lowfreq_weight(
-        step=step,
-        total_steps=total_steps,
-        lambda_low=lambda_low,
-        start=schedule_start,
-        end=schedule_end,
-    )
-
-    # 只在中間噪聲 timestep 加
-    t_mask = (t >= t_min) & (t <= t_max)
-
-    if w_low > 0.0 and t_mask.any():
-        # latent low-frequency，不是 pixel loss
-        pred_low = F.avg_pool2d(
-            pred_x0.float(),
-            kernel_size=kernel_size,
-            stride=kernel_size,
-        )
-        x0_low = F.avg_pool2d(
-            x0.float(),
-            kernel_size=kernel_size,
-            stride=kernel_size,
-        )
-
-        loss_low_per_sample = (pred_low - x0_low).pow(2).mean(dim=[1, 2, 3])
-
-        # 只讓 t_mask 內的 sample 產生 lowfreq loss
-        mask = t_mask.float()
-        mask = mask / mask.mean().clamp_min(1e-6)
-
-        loss_low = loss_low_per_sample * mask
-        loss_total = loss_main + w_low * loss_low
-
-        low_log = loss_low_per_sample[t_mask].detach().mean()
-        t_ratio_log = t_mask.float().detach().mean()
-    else:
-        loss_total = loss_main
-        low_log = torch.zeros((), device=x0.device, dtype=loss_main.dtype)
-        t_ratio_log = t_mask.float().detach().mean()
-
-    metrics = {
-        'loss_main': loss_main.detach().mean(),
-        'loss_lowfreq': low_log,
-        'lowfreq_weight': torch.tensor(w_low, device=x0.device, dtype=loss_main.dtype),
-        'lowfreq_t_ratio': t_ratio_log,
-    }
-
-    return loss_total, metrics
+    return loss_main, pred_x0, t
