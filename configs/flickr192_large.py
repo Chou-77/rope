@@ -62,6 +62,16 @@ def get_config():
         grid_size=12,
     )
 
+    config.lowfreq = d(
+        enable=True,
+        lambda_low=0.01,
+        schedule_start=0.10,
+        schedule_end=0.50,
+        t_min=0.10,
+        t_max=0.70,
+        kernel_size=4,
+    )
+
     config.sample = d(
         sample_steps=50,
         n_samples=50000,

@@ -96,7 +96,35 @@ def train(config):
                 loss = sde.LSimple(score_model, _z, pred=config.pred)
             elif config.train.mode == 'cond':
                 _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
-                loss = sde.LSimple(score_model, _z, pred=config.pred, conditions=[encode_anchor, prime_targe_pos])
+
+                if config.get('lowfreq', None) is not None and config.lowfreq.enable:
+                    loss, lowfreq_metrics = sde.LSimpleLowFreqX0(
+                        score_model,
+                        _z,
+                        pred=config.pred,
+                        conditions=[encode_anchor, prime_targe_pos],
+                        step=train_state.step,
+                        total_steps=config.train.n_steps,
+                        lambda_low=config.lowfreq.lambda_low,
+                        schedule_start=config.lowfreq.schedule_start,
+                        schedule_end=config.lowfreq.schedule_end,
+                        t_min=config.lowfreq.t_min,
+                        t_max=config.lowfreq.t_max,
+                        kernel_size=config.lowfreq.kernel_size,
+                    )
+
+                    for k, v in lowfreq_metrics.items():
+                        _metrics[k] = accelerator.gather(v.detach()).mean()
+                else:
+                    loss = sde.LSimple(
+                        score_model,
+                        _z,
+                        pred=config.pred,
+                        conditions=[encode_anchor, prime_targe_pos],
+                    )
+            # elif config.train.mode == 'cond':
+            #     _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
+            #     loss = sde.LSimple(score_model, _z, pred=config.pred, conditions=[encode_anchor, prime_targe_pos])
 
 
             else:
