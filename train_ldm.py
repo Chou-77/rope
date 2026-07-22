@@ -62,7 +62,22 @@ def train(config):
     nnet, nnet_ema, optimizer, train_dataset_loader = accelerator.prepare(
         train_state.nnet, train_state.nnet_ema, train_state.optimizer, train_dataset_loader)
     lr_scheduler = train_state.lr_scheduler
-    train_state.resume(config.ckpt_root)
+    # train_state.resume(config.ckpt_root)
+    train_state.resume(
+        config.ckpt_root,
+        load_optimizer=False,
+        load_lr_scheduler=True,
+    )
+    print("after resume step:", train_state.step)
+    print("config lr:", config.optimizer.lr)
+    print("train_state optimizer lr:", train_state.optimizer.param_groups[0]["lr"])
+    print("prepared optimizer lr:", optimizer.param_groups[0]["lr"])
+
+    if hasattr(train_state.lr_scheduler, "base_lrs"):
+        print("scheduler base_lrs:", train_state.lr_scheduler.base_lrs)
+
+    if hasattr(train_state.lr_scheduler, "last_epoch"):
+        print("scheduler last_epoch:", train_state.lr_scheduler.last_epoch)
 
     autoencoder = libs.autoencoder.get_model(config.autoencoder.pretrained_path)
     autoencoder.to(device)

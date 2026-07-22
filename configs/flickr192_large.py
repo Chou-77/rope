@@ -29,14 +29,14 @@ def get_config():
 
     config.optimizer = d(
         name='adamw',
-        lr=0.0002,
+        lr=0.00005,
         weight_decay=0.03,
         betas=(0.9, 0.999),
     )
 
     config.lr_scheduler = d(
         name='customized',
-        warmup_steps=5000
+        warmup_steps=0
     )
 
     config.nnet = d(
@@ -56,7 +56,7 @@ def get_config():
 
     config.dataset = d(
         name='flickr',
-        path='/home/lab722-3090/下載/PQDiff-main (副本)/dataset/scenery/train/images/',
+        path='/home/lab722-3090/下載/PQDiff-main/dataset/scenery/train/images/',
         resolution=192,
         embed_dim=1024,
         grid_size=12,
@@ -64,11 +64,11 @@ def get_config():
 
     config.lpl = d(
         enable=True,
-        lambda_lpl=0.01,
-        schedule_start=0.50,
+        lambda_lpl=0.005,
+        schedule_start=0.65,
         schedule_end=1.00,
         snr_threshold=3.0,
-        layers=[2, 1],
+        layers=[2, ],
     )
 
     config.sample = d(
@@ -76,7 +76,7 @@ def get_config():
         n_samples=50000,
         mini_batch_size=50,  # the decoder is large
         algorithm='dpm_solver',
-        cfg=True,
+        cfg=False,
         scale=0.4,
         path=''
     )

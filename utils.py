@@ -108,11 +108,21 @@ class TrainState(object):
             if key != 'step' and val is not None and hasattr(val, 'state_dict'):
                 torch.save(val.state_dict(), os.path.join(path, f'{key}.pth'))
 
-    def load(self, path):
+    def load(self, path, load_optimizer=True, load_lr_scheduler=True):
         logging.info(f'load from {path}')
         self.step = torch.load(os.path.join(path, 'step.pth'))
         for key, val in self.__dict__.items():
             if key != 'step' and val is not None:
+
+                if key == 'optimizer' and not load_optimizer:
+                    print("skip optimizer")
+                    continue
+
+                if key == 'lr_scheduler' and not load_lr_scheduler:
+                    print("skip lr_scheduler")
+                    continue
+
+                print("load", key)
                 val.load_state_dict(torch.load(os.path.join(path, f'{key}.pth'), map_location='cpu'))
     # def load(self, path):
     #     logging.info(f'load from {path}')
@@ -140,7 +150,7 @@ class TrainState(object):
     #                 val.load_state_dict(state_dict)
     #             # ==========================================
 
-    def resume(self, ckpt_root, step=None):
+    def resume(self, ckpt_root, step=None, load_optimizer=True, load_lr_scheduler=True):
         if not os.path.exists(ckpt_root):
             print("No checkpoint loaded", ckpt_root)
             return
@@ -154,7 +164,7 @@ class TrainState(object):
         ckpt_path = os.path.join(ckpt_root, f'{step}.ckpt')
         logging.info(f'resume from {ckpt_path}')
         print(f'resume from {ckpt_path}')
-        self.load(ckpt_path)
+        self.load(ckpt_path, load_optimizer=load_optimizer, load_lr_scheduler=load_lr_scheduler)
 
     def to(self, device):
         for key, val in self.__dict__.items():
