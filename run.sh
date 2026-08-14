@@ -31,10 +31,11 @@ python3 -m torch.distributed.launch --nproc_per_node=8 \
                 --config flickr192_large
 
 python eval_dir/inception.py --path ./eval_dir/scenery/1x/gen/
-python eval_dir/inception.py --path ./eval_dir/scenery/1x_step75000/gen/
+python eval_dir/inception.py --path ./eval_dir/scenery/1x_step80000/gen/
 python eval_dir/inception.py --path ./eval_dir/scenery/1x/copy/
 python -m pytorch_fid ./eval_dir/scenery/1x/ori/ ./eval_dir/scenery/1x/copy/
 python -m pytorch_fid ./eval_dir/scenery/1x/ori/ ./eval_dir/scenery/1x/gen/
+python -m pytorch_fid ./eval_dir/scenery/1x/ori/ ./eval_dir/scenery/1x_step80000/gen/
 python eval_dir/psnr.py --original ./eval_dir/scenery/1x/ori/ --contrast ./eval_dir/scenery/1x/gen/
 python eval_dir/psnr.py --original ./eval_dir/building/1x/base_gen/gt/ --contrast ./eval_dir/building/1x/base_gen/generated/
 
@@ -54,7 +55,7 @@ python3 -m torch.distributed.launch --nproc_per_node=1 \
         --master_addr=${MASTER_ADDR:-127.0.0.1} \
         --master_port=${MASTER_PORT:-36144} \
         evaluate.py --target_expansion 0.25 0.25 0.25 0.25 --eval_dir ./eval_dir/scenery/1x/ --size 128 \
-                --config flickr192_large
+                --config flickr192_large --no-cfg
 
 
 python3 -m torch.distributed.launch --nproc_per_node=1 \

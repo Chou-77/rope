@@ -18,7 +18,6 @@ import builtins
 import os
 import wandb
 import libs.autoencoder
-import torch.nn.functional as F
 
 
 
@@ -67,7 +66,7 @@ def train(config):
     train_state.resume(
         config.ckpt_root,
         load_optimizer=False,
-        load_lr_scheduler=False,
+        load_lr_scheduler=True,
     )
     print("after resume step:", train_state.step)
     print("config lr:", config.optimizer.lr)
@@ -255,6 +254,7 @@ def train(config):
         depth_idx = ordered_keys.index(layer_name)
         return 2.0 ** (-depth_idx * power)
 
+
     def compute_lpl_loss(pred_x0, target_x0, feature_hook):
         with torch.no_grad():
             target_feats = {
@@ -265,6 +265,7 @@ def train(config):
         pred_feats = feature_hook.extract(pred_x0)
 
         keys = []
+
         for layer_id in feature_hook.layer_ids:
             if isinstance(layer_id, int):
                 name = f"up_{layer_id}"
@@ -279,22 +280,14 @@ def train(config):
             return zero, {
                 "lpl_valid_ratio": zero,
                 "lpl_depth_weight_mean": zero,
-                "lpl_sample_max_to_mean": zero,
-                "lpl_sample_top1_frac": zero,
-                "lpl_layer_raw": {},
-                "lpl_layer_weighted": {},
-                "lpl_layer_contrib": {},
             }
+
+        base_hw = pred_feats[keys[0]].shape[-2:]
 
         total_loss = 0.0
         total_weight = 0.0
-        total_loss_per_sample = None
-
         valid_ratios = []
         depth_weights = []
-
-        layer_raw_losses = {}
-        layer_weighted_numerators = {}
 
         for k in keys:
             pred_f = pred_feats[k].float()
@@ -322,148 +315,20 @@ def train(config):
                 layer_loss = (pred_n - target_n).pow(2).mean()
                 valid_ratio = torch.ones((), device=pred_x0.device)
 
-            # 這個是 per-sample 診斷用，不影響 loss
-            layer_loss_per_sample = (pred_n - target_n).pow(2).mean(dim=[1, 2, 3])
-
-            if total_loss_per_sample is None:
-                total_loss_per_sample = depth_w * layer_loss_per_sample
-            else:
-                total_loss_per_sample = total_loss_per_sample + depth_w * layer_loss_per_sample
-
-            weighted_loss = depth_w * layer_loss
-
-            total_loss = total_loss + weighted_loss
+            total_loss = total_loss + depth_w * layer_loss
             total_weight = total_weight + depth_w
 
             valid_ratios.append(valid_ratio.detach())
             depth_weights.append(torch.tensor(depth_w, device=pred_x0.device))
 
-            layer_raw_losses[k] = layer_loss.detach()
-            layer_weighted_numerators[k] = weighted_loss.detach()
-
         loss = total_loss / max(total_weight, 1e-8)
-
-        loss_per_sample = total_loss_per_sample / max(total_weight, 1e-8)
-
-        sample_mean = loss_per_sample.mean().detach().clamp_min(1e-8)
-        sample_max = loss_per_sample.max().detach()
-        sample_sum = loss_per_sample.sum().detach().clamp_min(1e-8)
-
-        total_weight_tensor = torch.tensor(total_weight, device=pred_x0.device).clamp_min(1e-8)
-        total_weighted_loss = total_loss.detach().clamp_min(1e-8)
-
-        layer_weighted_losses = {}
-        layer_contrib_ratios = {}
-
-        for k in keys:
-            # 這個加起來會等於最後的 loss
-            layer_weighted_losses[k] = layer_weighted_numerators[k] / total_weight_tensor
-
-            # 這個加起來會接近 1，代表每層佔 LPL 幾成
-            layer_contrib_ratios[k] = layer_weighted_numerators[k] / total_weighted_loss
 
         extra_metrics = {
             "lpl_valid_ratio": torch.stack(valid_ratios).mean(),
             "lpl_depth_weight_mean": torch.stack(depth_weights).mean(),
-            "lpl_sample_max_to_mean": sample_max / sample_mean,
-            "lpl_sample_top1_frac": sample_max / sample_sum,
-
-            "lpl_layer_raw": layer_raw_losses,
-            "lpl_layer_weighted": layer_weighted_losses,
-            "lpl_layer_contrib": layer_contrib_ratios,
         }
 
         return loss, extra_metrics
-
-    def relation_matrix(feat_a, feat_b, pool_size=4, temperature=1.0):
-        """
-        feat_a: anchor feature, shape [B, C, H, W]
-        feat_b: target feature, shape [B, C, H, W]
-
-        return:
-            relation matrix [B, N, N], N = pool_size * pool_size
-        """
-        feat_a = feat_a.float()
-        feat_b = feat_b.float()
-
-        feat_a = F.adaptive_avg_pool2d(feat_a, (pool_size, pool_size))
-        feat_b = F.adaptive_avg_pool2d(feat_b, (pool_size, pool_size))
-
-        # [B, C, H, W] -> [B, N, C]
-        feat_a = feat_a.flatten(2).transpose(1, 2)
-        feat_b = feat_b.flatten(2).transpose(1, 2)
-
-        feat_a = F.normalize(feat_a, dim=-1)
-        feat_b = F.normalize(feat_b, dim=-1)
-
-        rel = torch.bmm(feat_a, feat_b.transpose(1, 2)) / temperature
-        return rel
-
-    def compute_relation_lpl_loss(anchor_x0, pred_x0, target_x0, feature_hook):
-        """
-        anchor_x0: encode_anchor
-        pred_x0: model predicted x0
-        target_x0: GT target latent
-
-        loss:
-            relation(anchor, pred_target) vs relation(anchor, GT_target)
-        """
-
-        with torch.no_grad():
-            anchor_feats = {
-                k: v.detach()
-                for k, v in feature_hook.extract(anchor_x0).items()
-            }
-
-            target_feats = {
-                k: v.detach()
-                for k, v in feature_hook.extract(target_x0).items()
-            }
-
-        pred_feats = feature_hook.extract(pred_x0)
-
-        loss = 0.0
-        count = 0
-        layer_losses = {}
-
-        pool_size = config.lpl.get('relation_pool_size', 4)
-        temperature = config.lpl.get('relation_temperature', 1.0)
-
-        for k in pred_feats.keys():
-            if k not in anchor_feats or k not in target_feats:
-                continue
-
-            anchor_f = anchor_feats[k]
-            pred_f = pred_feats[k]
-            target_f = target_feats[k]
-
-            rel_pred = relation_matrix(
-                anchor_f,
-                pred_f,
-                pool_size=pool_size,
-                temperature=temperature,
-            )
-
-            with torch.no_grad():
-                rel_gt = relation_matrix(
-                    anchor_f,
-                    target_f,
-                    pool_size=pool_size,
-                    temperature=temperature,
-                )
-
-            layer_loss = (rel_pred - rel_gt).pow(2).mean()
-
-            loss = loss + layer_loss
-            count += 1
-
-            layer_losses[k] = layer_loss.detach()
-
-        if count == 0:
-            zero = torch.zeros((), device=pred_x0.device)
-            return zero, layer_losses
-
-        return loss / count, layer_losses
 
     # def compute_lpl_loss(pred_x0, target_x0, feature_hook):
     #     # target_x0 不需要梯度
@@ -541,85 +406,32 @@ def train(config):
                     snr_mask = snr > config.lpl.snr_threshold
 
                     if w_lpl > 0.0 and snr_mask.any():
-                        loss_lpl_active, rel_layer_losses = compute_relation_lpl_loss(
-                            encode_anchor[snr_mask],
+                        loss_lpl, lpl_extra = compute_lpl_loss(
                             pred_x0[snr_mask],
                             _z[snr_mask],
                             lpl_feature_hook,
                         )
 
-                        active_ratio = snr_mask.float().mean().detach()
-                        loss_lpl = active_ratio * loss_lpl_active
-
-                        lpl_weight_tensor = torch.tensor(w_lpl, device=device)
-                        lpl_effect = lpl_weight_tensor * loss_lpl.detach()
-                        lpl_effect_active = lpl_weight_tensor * loss_lpl_active.detach()
-
-                        loss = loss_main + lpl_weight_tensor * loss_lpl
+                        loss = loss_main + w_lpl * loss_lpl
 
                         _metrics['loss_main'] = accelerator.gather(loss_main.detach()).mean()
-                        _metrics['loss_lpl_active'] = accelerator.gather(loss_lpl_active.detach()).mean()
                         _metrics['loss_lpl'] = accelerator.gather(loss_lpl.detach()).mean()
-                        _metrics['lpl_weight'] = lpl_weight_tensor
-                        _metrics['lpl_effect'] = accelerator.gather(lpl_effect).mean()
-
-                        _metrics['lpl_snr_ratio'] = accelerator.gather(
-                            snr_mask.float().detach()
-                        ).mean()
-
-                        _metrics['lpl_active_count'] = accelerator.gather(
-                            snr_mask.float().sum().detach()
-                        ).mean()
-
-                        _metrics['lpl_relative_to_main'] = accelerator.gather(
-                            lpl_effect / loss_main.detach().clamp_min(1e-8)
-                        ).mean()
-
-                        _metrics['lpl_active_relative_to_main'] = accelerator.gather(
-                            lpl_effect_active / loss_main.detach().clamp_min(1e-8)
-                        ).mean()
-
-                        _metrics['lpl_contribution_to_total'] = accelerator.gather(
-                            lpl_effect / (loss_main.detach() + lpl_effect).clamp_min(1e-8)
-                        ).mean()
-
-                        for name, value in rel_layer_losses.items():
-                            _metrics[f"rel_lpl_{name}"] = accelerator.gather(
-                                value.detach()
-                            ).mean()
+                        _metrics['lpl_weight'] = torch.tensor(w_lpl, device=device)
+                        _metrics['lpl_effect'] = torch.tensor(w_lpl, device=device) * loss_lpl.detach()
+                        _metrics['lpl_snr_ratio'] = accelerator.gather(snr_mask.float().detach()).mean()
+                        _metrics['lpl_valid_ratio'] = accelerator.gather(lpl_extra['lpl_valid_ratio'].detach()).mean()
+                        _metrics['lpl_depth_weight_mean'] = accelerator.gather(lpl_extra['lpl_depth_weight_mean'].detach()).mean()
 
                     else:
                         loss = loss_main
 
-                        _metrics['loss_main'] = accelerator.gather(
-                            loss_main.detach()
-                        ).mean()
-
-                        _metrics['loss_lpl_active'] = torch.zeros((), device=device)
+                        _metrics['loss_main'] = accelerator.gather(loss_main.detach()).mean()
                         _metrics['loss_lpl'] = torch.zeros((), device=device)
                         _metrics['lpl_weight'] = torch.tensor(w_lpl, device=device)
                         _metrics['lpl_effect'] = torch.zeros((), device=device)
-
-                        _metrics['lpl_snr_ratio'] = accelerator.gather(
-                            snr_mask.float().detach()
-                        ).mean()
-
-                        _metrics['lpl_active_count'] = accelerator.gather(
-                            snr_mask.float().sum().detach()
-                        ).mean()
-
-                        for layer_id in config.lpl.layers:
-                            if isinstance(layer_id, int):
-                                name = f"up_{layer_id}"
-                            else:
-                                name = layer_id
-
-                            _metrics[f"rel_lpl_{name}"] = torch.zeros((), device=device)
-
-                        _metrics['lpl_relative_to_main'] = torch.zeros((), device=device)
-                        _metrics['lpl_active_relative_to_main'] = torch.zeros((), device=device)
-                        _metrics['lpl_contribution_to_total'] = torch.zeros((), device=device)
-
+                        _metrics['lpl_snr_ratio'] = accelerator.gather(snr_mask.float().detach()).mean()
+                        _metrics['lpl_valid_ratio'] = torch.zeros((), device=device)
+                        _metrics['lpl_depth_weight_mean'] = torch.zeros((), device=device)
 
                 else:
                     loss = sde.LSimple(

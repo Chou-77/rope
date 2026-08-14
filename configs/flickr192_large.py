@@ -20,7 +20,7 @@ def get_config():
 
     config.train = d(
         n_steps=100000,
-        batch_size=16,
+        batch_size=8,
         mode='cond',
         log_interval=10,
         eval_interval=5000,
@@ -56,7 +56,7 @@ def get_config():
 
     config.dataset = d(
         name='flickr',
-        path='/home/lab722-3090/下載/PQDiff-main/dataset/scenery/train/images/',
+        path='/home/lab722-3090/下載/PQDiff-main (副本)/dataset/scenery/train/images/',
         resolution=192,
         embed_dim=1024,
         grid_size=12,
@@ -65,10 +65,22 @@ def get_config():
     config.lpl = d(
         enable=True,
         lambda_lpl=0.005,
+        weight_schedule='constant',
         schedule_start=0.65,
         schedule_end=1.00,
-        snr_threshold=3.0,
-        layers=[2, ],
+        snr_threshold=1.0,
+        layers=[3,2,1],
+        # depth-specific weighting
+        depth_weighting=True,
+        depth_weight_power=0.5,
+        # relation loss 專用
+        relation_pool_size=4,
+        relation_temperature=1.0,
+
+        # outlier mask
+        outlier_mask=True,
+        outlier_threshold=4.0,
+        min_valid_ratio=0.25,
     )
 
     config.sample = d(
@@ -77,7 +89,7 @@ def get_config():
         mini_batch_size=50,  # the decoder is large
         algorithm='dpm_solver',
         cfg=False,
-        scale=0.4,
+        scale=0.0,
         path=''
     )
 
