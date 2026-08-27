@@ -17,6 +17,11 @@ def get_config():
     config.autoencoder = d(
         pretrained_path='assets/autoencoder_kl.pth'
     )
+    config.nnet.use_self_cond = True
+
+    config.self_cond = ml_collections.ConfigDict()
+    config.self_cond.enable = True
+    config.self_cond.prob = 0.5
 
     config.train = d(
         n_steps=100000,
@@ -63,8 +68,8 @@ def get_config():
     )
 
     config.lpl = d(
-        enable=True,
-        lambda_lpl=0.005,
+        enable=False,
+        lambda_lpl=0.02,
         weight_schedule='constant',
         schedule_start=0.65,
         schedule_end=1.00,

@@ -185,13 +185,30 @@ class ScoreModel(object):
 
     def x0_pred(self, xt, conditions, t):
         pred = self.predict(xt, conditions, t)
+
         if self.pred == 'noise_pred':
-            x0_pred = self.sde.cum_alpha(t).rsqrt() * xt - self.sde.nsr(t).sqrt() * pred
+            x0_pred = stp(self.sde.cum_alpha(t).rsqrt(), xt) - stp(
+                self.sde.nsr(t).sqrt(),
+                pred,
+            )
+
         elif self.pred == 'x0_pred':
             x0_pred = pred
+
         else:
             raise NotImplementedError
+
         return x0_pred
+
+    # def x0_pred(self, xt, conditions, t):
+    #     pred = self.predict(xt, conditions, t)
+    #     if self.pred == 'noise_pred':
+    #         x0_pred = self.sde.cum_alpha(t).rsqrt() * xt - self.sde.nsr(t).sqrt() * pred
+    #     elif self.pred == 'x0_pred':
+    #         x0_pred = pred
+    #     else:
+    #         raise NotImplementedError
+    #     return x0_pred
 
     def score(self, xt, conditions, t):
         cum_beta = self.sde.cum_beta(t)
@@ -265,6 +282,135 @@ def euler_maruyama(rsde, x_init, sample_steps, conditions, eps=1e-3, T=1, trace=
         statistics = dict(s=s, t=t, sigma=sigma.item())
         logging.debug(dct2str(statistics))
     return x
+@torch.no_grad()
+def euler_maruyama_self_cond(
+    rsde,
+    x_init,
+    sample_steps,
+    conditions,
+    eps=1e-3,
+    T=1,
+    trace=None,
+    verbose=False,
+):
+    """
+    Euler-Maruyama / ODE sampler with self-conditioning.
+
+    conditions:
+        [anchor, pos]
+
+    Internally it uses:
+        [anchor, pos, self_cond]
+
+    self_cond is updated by the previous predicted x0.
+    """
+    assert isinstance(rsde, ReverseSDE) or isinstance(rsde, ODE)
+
+    print(f"euler_maruyama_self_cond with sample_steps={sample_steps}")
+
+    timesteps = np.append(0., np.linspace(eps, T, sample_steps))
+    timesteps = torch.tensor(timesteps).to(x_init)
+
+    x = x_init
+    anchor, pos = conditions[:2]
+
+    # 第一步沒有 previous x0，所以用 0
+    self_cond = torch.zeros_like(x)
+
+    if trace is not None:
+        trace.append(x)
+
+    for s, t in tqdm(
+        list(zip(timesteps, timesteps[1:]))[::-1],
+        disable=not verbose,
+        desc='euler_maruyama_self_cond'
+    ):
+        cond_sc = [anchor, pos, self_cond]
+
+        # 1. 用目前 self_cond 做這一步更新
+        drift = rsde.drift(x, cond_sc, t)
+        diffusion = rsde.diffusion(t)
+
+        dt = s - t
+        mean = x + drift * dt
+        sigma = diffusion * (-dt).sqrt()
+        x_next = mean + stp(sigma, torch.randn_like(x)) if s != 0 else mean
+
+        # 2. 預測目前這一步的 x0，留給下一步當 self_cond
+        # 注意：這不是 ground truth，是模型自己預測的 pred_x0
+        pred_x0 = rsde.score_model.x0_pred(
+            x,
+            cond_sc,
+            t,
+        )
+
+        self_cond = pred_x0.detach()
+        x = x_next
+
+        if trace is not None:
+            trace.append(x)
+
+        statistics = dict(s=s, t=t, sigma=sigma.item() if torch.is_tensor(sigma) else sigma)
+        logging.debug(dct2str(statistics))
+
+    return x
+
+
+def LSimpleSelfCondReturnX0(
+    score_model: ScoreModel,
+    x0,
+    conditions,
+    pred='noise_pred',
+    self_cond_prob=0.5,
+):
+    x0 = x0.detach()
+
+    if isinstance(conditions, list):
+        conditions = [
+            c.detach() if torch.is_tensor(c) else c
+            for c in conditions
+        ]
+
+    t, noise, xt = score_model.sde.sample(x0)
+
+    anchor, pos = conditions[:2]
+
+    self_cond = torch.zeros_like(x0)
+    use_self_cond = torch.rand((), device=x0.device) < self_cond_prob
+
+    if use_self_cond:
+        with torch.no_grad():
+            self_cond = score_model.x0_pred(
+                xt,
+                [anchor, pos, torch.zeros_like(x0)],
+                t,
+            ).detach()
+
+    cond_sc = [anchor, pos, self_cond]
+
+    raw_pred = score_model.predict(xt, cond_sc, t)
+
+    if pred == 'noise_pred':
+        noise_pred = raw_pred
+        loss = mos(noise - noise_pred)
+
+        alpha = score_model.sde.cum_alpha(t).reshape(-1, 1, 1, 1)
+        nsr = score_model.sde.nsr(t).reshape(-1, 1, 1, 1)
+        pred_x0 = alpha.rsqrt() * xt - nsr.sqrt() * noise_pred
+
+    elif pred == 'x0_pred':
+        pred_x0 = raw_pred
+        loss = mos(x0 - pred_x0)
+
+    else:
+        raise NotImplementedError(pred)
+
+    self_cond_used = torch.tensor(
+        float(use_self_cond.item()),
+        device=x0.device,
+    )
+
+    return loss, pred_x0, t, self_cond_used
 
 
 def LSimple(score_model: ScoreModel, x0, conditions, pred='noise_pred'):

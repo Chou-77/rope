@@ -149,7 +149,9 @@ class ImageDataset(Dataset):
             grid_size,
             anchor_crop_scale=(0.15, 0.40),
             target_crop_scale=(0.8, 1.0),
-            p_uncond=0.2
+            p_uncond=0,
+            geometry_sampling="random",
+            stratified_prob=0.5,
     ):
         super().__init__()
         self.resolution = resolution
@@ -165,6 +167,8 @@ class ImageDataset(Dataset):
         self.target_rcr = RandomResizedCropCoord(resolution, scale=target_crop_scale,
                                                  interpolation=transforms.InterpolationMode.BILINEAR)
         self.p_uncond = p_uncond
+        self.geometry_sampling = geometry_sampling
+        self.stratified_prob = stratified_prob
 
     def __len__(self):
         return len(self.image_paths)
@@ -189,6 +193,54 @@ class ImageDataset(Dataset):
         # 展平為 [L, 2] 並回傳
         return grid.reshape(-1, 2)
 
+    def sample_stratified_anchor(self, pil_image, target_pos):
+        """
+        Sample anchor crop conditioned on target crop.
+
+        The target crop is still random.
+        The anchor crop is sampled inside the target crop, with controlled
+        anchor-to-target side ratio.
+
+        This keeps random augmentation, but avoids fully uncontrolled
+        anchor-target geometry.
+        """
+        ti, tj, th, tw = target_pos
+
+        # anchor side length ratio relative to target side length.
+        # These bins roughly cover large / medium / small anchors.
+        # Do not treat these names as exact 1x/2x/3x formulas.
+        scale_bin = random.choice(["large", "medium", "small"])
+
+        if scale_bin == "large":
+            side_ratio = random.uniform(0.50, 0.70)
+        elif scale_bin == "medium":
+            side_ratio = random.uniform(0.35, 0.50)
+        else:
+            side_ratio = random.uniform(0.22, 0.35)
+
+        ah = int(round(th * side_ratio))
+        aw = int(round(tw * side_ratio))
+
+        ah = max(1, min(ah, th))
+        aw = max(1, min(aw, tw))
+
+        ai_min = ti
+        ai_max = ti + th - ah
+        aj_min = tj
+        aj_max = tj + tw - aw
+
+        ai = random.randint(ai_min, ai_max)
+        aj = random.randint(aj_min, aj_max)
+
+        anchor_img = F.resized_crop(
+            pil_image,
+            ai, aj, ah, aw,
+            (self.resolution, self.resolution),
+            transforms.InterpolationMode.BILINEAR,
+        )
+
+        return (ai, aj, ah, aw), anchor_img
+
     def __getitem__(self, idx):
 
         path = self.image_paths[idx]
@@ -199,8 +251,22 @@ class ImageDataset(Dataset):
 
         # 2. 取得 Random Crop 的參數，並「同步」套用到 RGB 與 Depth
         # anchor_pos 裡面包含 (i, j, h, w)，代表裁切的座標與大小
-        anchor_pos, anchor_img_rgb = self.anchor_rcr(pil_image)
-        target_pos, target_img_rgb = self.target_rcr(pil_image)
+        # anchor_pos, anchor_img_rgb = self.anchor_rcr(pil_image)
+        # target_pos, target_img_rgb = self.target_rcr(pil_image)
+        use_stratified = (
+            self.geometry_sampling == "stratified"
+            or (
+                self.geometry_sampling == "mixed"
+                and random.random() < self.stratified_prob
+            )
+        )
+
+        if use_stratified:
+            target_pos, target_img_rgb = self.target_rcr(pil_image)
+            anchor_pos, anchor_img_rgb = self.sample_stratified_anchor(pil_image, target_pos)
+        else:
+            anchor_pos, anchor_img_rgb = self.anchor_rcr(pil_image)
+            target_pos, target_img_rgb = self.target_rcr(pil_image)
 
 
 
@@ -295,7 +361,8 @@ class Flickr(DatasetFactory):
         train_labels = [sorted_classes[x] for x in class_names]
         print('Finish counting FLickr files, total images: %d' % len(train_files))
 
-        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.05, 0.5), target_crop_scale=(0.5, 1.0), p_uncond=0.15)
+        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.05, 0.5), target_crop_scale=(0.8, 1.0), p_uncond=0,geometry_sampling="random",
+    stratified_prob=0,)
 
         # val_files = _list_image_files_recursively(path)
         # train_labels = [sorted_classes[x] for x in class_names]

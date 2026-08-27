@@ -227,15 +227,26 @@ class CrossAttention(nn.Module):
 class UViT(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4.,
                  qkv_bias=False, qk_scale=None, norm_layer=nn.LayerNorm, mlp_time_embed=False, num_classes=-1,
-                 use_checkpoint=False, conv=True, skip=True):
+                 use_checkpoint=False, conv=True, skip=True, use_self_cond=False):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim
         self.num_classes = num_classes
         self.in_chans = in_chans
+        self.use_self_cond = use_self_cond
 
         # 注意：你的模型將 Anchor View (3通道) 和 x (3通道) 合併，所以 in_chans 要 * 2
         self.patch_embed = PatchEmbed(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans * 2, embed_dim=embed_dim)
+
+        if self.use_self_cond:
+            self.self_cond_patch_embed = PatchEmbed(
+                img_size=img_size,
+                patch_size=patch_size,
+                in_chans=in_chans,
+                embed_dim=embed_dim
+            )
+        else:
+            self.self_cond_patch_embed = None
 
         self.time_embed = nn.Sequential(
             nn.Linear(embed_dim, 4 * embed_dim),
@@ -269,6 +280,10 @@ class UViT(nn.Module):
         self.final_layer = nn.Conv2d(self.in_chans, self.in_chans, 3, padding=1) if conv else nn.Identity()
 
         self.apply(self._init_weights)
+        if self.self_cond_patch_embed is not None:
+            nn.init.zeros_(self.self_cond_patch_embed.proj.weight)
+            if self.self_cond_patch_embed.proj.bias is not None:
+                nn.init.zeros_(self.self_cond_patch_embed.proj.bias)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -280,17 +295,28 @@ class UViT(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x, conditions, timesteps):
-        # ⚠️ 重點修改：傳入的不再是 Target_pos 的高維 Embedding，而是實體的網格座標 (H, W)
-        # pos_coords 的預期形狀為: [B, L, 2] (例如 [Batch, 196, 2])
-        anchor_view, pos_coords = conditions
+
+        if len(conditions) == 2:
+            anchor_view, pos_coords = conditions
+            self_cond = None
+        elif len(conditions) == 3:
+            anchor_view, pos_coords, self_cond = conditions
+        else:
+            raise ValueError(f"Unexpected number of conditions: {len(conditions)}")
 
         x = x.float()
         anchor_view = anchor_view.float()
         pos_coords = pos_coords.float()
 
-        # 影像特徵融合
-        x = torch.cat([anchor_view, x], dim=1)  # batch, 6, H, W
+        x = torch.cat([anchor_view, x], dim=1)
         x = self.patch_embed(x)
+
+        if self.use_self_cond:
+            if self_cond is None:
+                self_cond = torch.zeros_like(anchor_view)
+
+            self_cond = self_cond.float()
+            x = x + self.self_cond_patch_embed(self_cond)
 
         # 1. 加入時間特徵
         time_token = self.time_embed(timestep_embedding(timesteps, self.embed_dim)).unsqueeze(dim=1)

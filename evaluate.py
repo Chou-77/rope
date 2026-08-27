@@ -279,15 +279,56 @@ def sampling(args, config):
         if args.cfg:
             encode_anchor = torch.cat([encode_anchor, torch.ones_like(encode_anchor)], dim=0)
             prime_target_position = torch.cat([prime_target_position, torch.ones_like(prime_target_position)], dim=0)
+
         z_init = torch.randn(encode_anchor.size(), device=args.gpu)
-        noise_schedule = NoiseScheduleVP(schedule='linear')
-        kwargs = {'conditions': [encode_anchor, prime_target_position]}
-        model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
-        dpm_solver = DPM_Solver(model_fn, noise_schedule)
+
+        use_self_cond = (
+                config.get('self_cond', None) is not None
+                and config.self_cond.enable
+        )
+
+        if use_self_cond and args.cfg:
+            raise ValueError("Self-conditioning evaluation currently does not support CFG. Please use --no-cfg.")
 
         start = time.time()
-        z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=False)
+
+        if use_self_cond:
+            z = sde.euler_maruyama_self_cond(
+                sde.ODE(score_model_ema),
+                x_init=z_init,
+                sample_steps=50,
+                conditions=[encode_anchor, prime_target_position],
+                eps=1e-4,
+            )
+        else:
+            noise_schedule = NoiseScheduleVP(schedule='linear')
+            kwargs = {'conditions': [encode_anchor, prime_target_position]}
+            model_fn = model_wrapper(
+                score_model_ema.noise_pred,
+                noise_schedule,
+                time_input_type='0',
+                model_kwargs=kwargs,
+            )
+            dpm_solver = DPM_Solver(model_fn, noise_schedule)
+
+            z = dpm_solver.sample(
+                z_init,
+                steps=50,
+                eps=1e-4,
+                adaptive_step_size=False,
+                fast_version=False,
+            )
+
         end = time.time()
+        # z_init = torch.randn(encode_anchor.size(), device=args.gpu)
+        # noise_schedule = NoiseScheduleVP(schedule='linear')
+        # kwargs = {'conditions': [encode_anchor, prime_target_position]}
+        # model_fn = model_wrapper(score_model_ema.noise_pred, noise_schedule, time_input_type='0', model_kwargs=kwargs)
+        # dpm_solver = DPM_Solver(model_fn, noise_schedule)
+        #
+        # start = time.time()
+        # z = dpm_solver.sample(z_init, steps=50, eps=1e-4, adaptive_step_size=False, fast_version=False)
+        # end = time.time()
 
         if args.cfg:
             pred_target = decode(z, autoencoder)[:z.size(0) // 2]

@@ -506,120 +506,31 @@ def train(config):
     score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
     score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
 
-
     def train_step(prime_target, prime_anchor_view, prime_targe_pos, encode_anchor, encode_target):
         _metrics = dict()
 
         with accelerator.accumulate(nnet):
-            # if config.train.mode == 'uncond':
-            #     _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
-            #     loss = sde.LSimple(score_model, _z, pred=config.pred)
             if config.train.mode == 'cond':
                 _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
 
-                if config.get('lpl', None) is not None and config.lpl.enable:
-                    loss_main, pred_x0, diffusion_t = sde.LSimpleReturnX0(
+                if config.get('self_cond', None) is not None and config.self_cond.enable:
+                    loss_main, pred_x0, diffusion_t, self_cond_used = sde.LSimpleSelfCondReturnX0(
                         score_model,
                         _z,
                         pred=config.pred,
                         conditions=[encode_anchor, prime_targe_pos],
+                        self_cond_prob=config.self_cond.prob,
                     )
 
-                    w_lpl = lpl_weight(
-                        step=train_state.step,
-                        total_steps=config.train.n_steps,
-                        lambda_lpl=config.lpl.lambda_lpl,
-                        start=config.lpl.schedule_start,
-                        end=config.lpl.schedule_end,
-                        schedule=config.lpl.get('weight_schedule', 'constant'),
-                    )
+                    loss = loss_main
 
-                    alpha = score_model.sde.cum_alpha(diffusion_t)
-                    beta = score_model.sde.cum_beta(diffusion_t)
-                    snr = alpha / beta.clamp_min(1e-8)
+                    _metrics['loss_main'] = accelerator.gather(
+                        loss_main.detach().mean()
+                    ).mean()
 
-                    snr_mask = snr > config.lpl.snr_threshold
-
-                    if w_lpl > 0.0 and snr_mask.any():
-                        loss_lpl_active, rel_layer_losses = compute_relation_lpl_loss(
-                            encode_anchor[snr_mask],
-                            pred_x0[snr_mask],
-                            _z[snr_mask],
-                            lpl_feature_hook,
-                        )
-
-                        active_ratio = snr_mask.float().mean().detach()
-                        loss_lpl = active_ratio * loss_lpl_active
-
-                        lpl_weight_tensor = torch.tensor(w_lpl, device=device)
-                        lpl_effect = lpl_weight_tensor * loss_lpl.detach()
-                        lpl_effect_active = lpl_weight_tensor * loss_lpl_active.detach()
-
-                        loss = loss_main + lpl_weight_tensor * loss_lpl
-
-                        _metrics['loss_main'] = accelerator.gather(loss_main.detach()).mean()
-                        _metrics['loss_lpl_active'] = accelerator.gather(loss_lpl_active.detach()).mean()
-                        _metrics['loss_lpl'] = accelerator.gather(loss_lpl.detach()).mean()
-                        _metrics['lpl_weight'] = lpl_weight_tensor
-                        _metrics['lpl_effect'] = accelerator.gather(lpl_effect).mean()
-
-                        _metrics['lpl_snr_ratio'] = accelerator.gather(
-                            snr_mask.float().detach()
-                        ).mean()
-
-                        _metrics['lpl_active_count'] = accelerator.gather(
-                            snr_mask.float().sum().detach()
-                        ).mean()
-
-                        _metrics['lpl_relative_to_main'] = accelerator.gather(
-                            lpl_effect / loss_main.detach().clamp_min(1e-8)
-                        ).mean()
-
-                        _metrics['lpl_active_relative_to_main'] = accelerator.gather(
-                            lpl_effect_active / loss_main.detach().clamp_min(1e-8)
-                        ).mean()
-
-                        _metrics['lpl_contribution_to_total'] = accelerator.gather(
-                            lpl_effect / (loss_main.detach() + lpl_effect).clamp_min(1e-8)
-                        ).mean()
-
-                        for name, value in rel_layer_losses.items():
-                            _metrics[f"rel_lpl_{name}"] = accelerator.gather(
-                                value.detach()
-                            ).mean()
-
-                    else:
-                        loss = loss_main
-
-                        _metrics['loss_main'] = accelerator.gather(
-                            loss_main.detach()
-                        ).mean()
-
-                        _metrics['loss_lpl_active'] = torch.zeros((), device=device)
-                        _metrics['loss_lpl'] = torch.zeros((), device=device)
-                        _metrics['lpl_weight'] = torch.tensor(w_lpl, device=device)
-                        _metrics['lpl_effect'] = torch.zeros((), device=device)
-
-                        _metrics['lpl_snr_ratio'] = accelerator.gather(
-                            snr_mask.float().detach()
-                        ).mean()
-
-                        _metrics['lpl_active_count'] = accelerator.gather(
-                            snr_mask.float().sum().detach()
-                        ).mean()
-
-                        for layer_id in config.lpl.layers:
-                            if isinstance(layer_id, int):
-                                name = f"up_{layer_id}"
-                            else:
-                                name = layer_id
-
-                            _metrics[f"rel_lpl_{name}"] = torch.zeros((), device=device)
-
-                        _metrics['lpl_relative_to_main'] = torch.zeros((), device=device)
-                        _metrics['lpl_active_relative_to_main'] = torch.zeros((), device=device)
-                        _metrics['lpl_contribution_to_total'] = torch.zeros((), device=device)
-
+                    _metrics['self_cond_used'] = accelerator.gather(
+                        self_cond_used.detach()
+                    ).mean()
 
                 else:
                     loss = sde.LSimple(
@@ -628,10 +539,6 @@ def train(config):
                         pred=config.pred,
                         conditions=[encode_anchor, prime_targe_pos],
                     )
-            # elif config.train.mode == 'cond':
-            #     _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
-            #     loss = sde.LSimple(score_model, _z, pred=config.pred, conditions=[encode_anchor, prime_targe_pos])
-
 
             else:
                 raise NotImplementedError(config.train.mode)
@@ -646,6 +553,10 @@ def train(config):
                 train_state.ema_update(config.get('ema_rate', 0.9999))
                 train_state.step += 1
                 optimizer.zero_grad()
+
+        return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
+
+
 
         return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
@@ -676,8 +587,23 @@ def train(config):
             if config.train.mode == 'uncond':
                 z = sde.euler_maruyama(sde.ODE(score_model_ema), x_init=z_init, sample_steps=50)
             elif config.train.mode == 'cond':
-                z = sde.euler_maruyama(sde.ODE(score_model_ema), x_init=z_init, sample_steps=50,
-                                       conditions=[encode_anchor, prime_targe_pos])
+                if config.get('self_cond', None) is not None and config.self_cond.enable:
+                    z = sde.euler_maruyama_self_cond(
+                        sde.ODE(score_model_ema),
+                        x_init=z_init,
+                        sample_steps=50,
+                        conditions=[encode_anchor, prime_targe_pos],
+                    )
+                else:
+                    z = sde.euler_maruyama(
+                        sde.ODE(score_model_ema),
+                        x_init=z_init,
+                        sample_steps=50,
+                        conditions=[encode_anchor, prime_targe_pos],
+                    )
+            # elif config.train.mode == 'cond':
+            #     z = sde.euler_maruyama(sde.ODE(score_model_ema), x_init=z_init, sample_steps=50,
+            #                            conditions=[encode_anchor, prime_targe_pos])
             else:
                 raise NotImplementedError
 
