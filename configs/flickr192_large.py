@@ -17,7 +17,6 @@ def get_config():
     config.autoencoder = d(
         pretrained_path='assets/autoencoder_kl.pth'
     )
-    config.nnet.use_self_cond = True
 
     config.self_cond = ml_collections.ConfigDict()
     config.self_cond.enable = True
@@ -57,6 +56,7 @@ def get_config():
         mlp_time_embed=False,
         num_classes=6001,
         use_checkpoint=True,
+        use_self_cond=True
     )
 
     config.dataset = d(
