@@ -375,16 +375,37 @@ def LSimpleSelfCondReturnX0(
 
     anchor, pos = conditions[:2]
 
+    batch_size = x0.shape[0]
+    num_sc = int(batch_size * self_cond_prob)
     self_cond = torch.zeros_like(x0)
-    use_self_cond = torch.rand((), device=x0.device) < self_cond_prob
 
-    if use_self_cond:
+    if num_sc > 0:
         with torch.no_grad():
-            self_cond = score_model.x0_pred(
-                xt,
-                [anchor, pos, torch.zeros_like(x0)],
-                t,
-            ).detach()
+            self_cond_pred = score_model.x0_pred(
+                xt[:num_sc],
+                [
+                    anchor[:num_sc],
+                    pos[:num_sc],
+                    torch.zeros_like(x0[:num_sc]),
+                ],
+                t[:num_sc],
+            )
+
+        self_cond[:num_sc] = self_cond_pred.detach()
+        sc_abs_mean = self_cond_pred.detach().abs().mean()
+        sc_abs_max = self_cond_pred.detach().abs().max()
+
+        x0_sc = x0[:num_sc]
+
+        x0_abs_mean = x0_sc.detach().abs().mean()
+        x0_abs_max = x0_sc.detach().abs().max()
+    else:
+        zero = torch.zeros((), device=x0.device)
+
+        sc_abs_mean = zero
+        sc_abs_max = zero
+        x0_abs_mean = zero
+        x0_abs_max = zero
 
     cond_sc = [anchor, pos, self_cond]
 
@@ -405,12 +426,27 @@ def LSimpleSelfCondReturnX0(
     else:
         raise NotImplementedError(pred)
 
-    self_cond_used = torch.tensor(
-        float(use_self_cond.item()),
-        device=x0.device,
-    )
+    if num_sc > 0:
+        loss_sc = loss[:num_sc].mean()
+    else:
+        loss_sc = torch.zeros((), device=x0.device)
 
-    return loss, pred_x0, t, self_cond_used
+    if num_sc < batch_size:
+        loss_no_sc = loss[num_sc:].mean()
+    else:
+        loss_no_sc = torch.zeros((), device=x0.device)
+
+    return (
+        loss,
+        pred_x0,
+        t,
+        loss_sc,
+        loss_no_sc,
+        sc_abs_mean,
+        sc_abs_max,
+        x0_abs_mean,
+        x0_abs_max,
+    )
 
 
 def LSimple(score_model: ScoreModel, x0, conditions, pred='noise_pred'):
@@ -470,5 +506,6 @@ def LSimpleReturnX0(
 
     else:
         raise NotImplementedError(pred)
+
 
     return loss_main, pred_x0, t

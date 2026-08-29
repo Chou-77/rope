@@ -28,7 +28,7 @@ def train(config):
         torch.backends.cudnn.deterministic = False
 
     mp.set_start_method('spawn')
-    accelerator = accelerate.Accelerator(gradient_accumulation_steps=32)
+    accelerator = accelerate.Accelerator(gradient_accumulation_steps=16)
 
     device = accelerator.device
     accelerate.utils.set_seed(config.seed, device_specific=True)
@@ -514,7 +514,16 @@ def train(config):
                 _z = autoencoder.sample(prime_target) if 'feature' in config.dataset.name else encode_target
 
                 if config.get('self_cond', None) is not None and config.self_cond.enable:
-                    loss_main, pred_x0, diffusion_t, self_cond_used = sde.LSimpleSelfCondReturnX0(
+                    (   loss_main,
+                        pred_x0,
+                        diffusion_t,
+                        loss_sc,
+                        loss_no_sc,
+                        sc_abs_mean,
+                        sc_abs_max,
+                        x0_abs_mean,
+                        x0_abs_max,
+                    ) = sde.LSimpleSelfCondReturnX0(
                         score_model,
                         _z,
                         pred=config.pred,
@@ -528,9 +537,28 @@ def train(config):
                         loss_main.detach().mean()
                     ).mean()
 
-                    _metrics['self_cond_used'] = accelerator.gather(
-                        self_cond_used.detach()
+                    _metrics['loss_sc'] = accelerator.gather(
+                        loss_sc.detach()
                     ).mean()
+
+                    _metrics['loss_no_sc'] = accelerator.gather(
+                        loss_no_sc.detach()
+                    ).mean()
+                    _metrics['sc_abs_mean'] = accelerator.gather(
+                        sc_abs_mean.detach()
+                    ).mean()
+
+                    _metrics['sc_abs_max'] = accelerator.gather(
+                        sc_abs_max.detach()
+                    ).max()
+
+                    _metrics['x0_abs_mean'] = accelerator.gather(
+                        x0_abs_mean.detach()
+                    ).mean()
+
+                    _metrics['x0_abs_max'] = accelerator.gather(
+                        x0_abs_max.detach()
+                    ).max()
 
                 else:
                     loss = sde.LSimple(
@@ -544,7 +572,18 @@ def train(config):
                 raise NotImplementedError(config.train.mode)
 
             _metrics['loss'] = accelerator.gather(loss.detach()).mean()
+
             accelerator.backward(loss.mean())
+
+            if accelerator.sync_gradients:
+                grad_norm = accelerator.clip_grad_norm_(
+                    nnet.parameters(),
+                    max_norm=1.0,
+                )
+
+                _metrics['grad_norm'] = accelerator.gather(
+                    grad_norm.detach()
+                ).mean()
 
             optimizer.step()
 
@@ -556,9 +595,6 @@ def train(config):
 
         return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
-
-
-        return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
     step_fid = []
     while train_state.step < config.train.n_steps:

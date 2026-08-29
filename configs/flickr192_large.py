@@ -24,7 +24,7 @@ def get_config():
 
     config.train = d(
         n_steps=100000,
-        batch_size=8,
+        batch_size=16,
         mode='cond',
         log_interval=10,
         eval_interval=5000,
@@ -33,14 +33,14 @@ def get_config():
 
     config.optimizer = d(
         name='adamw',
-        lr=0.00005,
+        lr=0.0002,
         weight_decay=0.03,
         betas=(0.9, 0.999),
     )
 
     config.lr_scheduler = d(
         name='customized',
-        warmup_steps=0
+        warmup_steps=5000
     )
 
     config.nnet = d(
