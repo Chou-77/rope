@@ -396,7 +396,7 @@ def sampling(args, config):
         z = dpm_solver.sample(
             z_init,
             steps=50,
-            eps=1e-4,
+            eps=1e-4, order=1,
             adaptive_step_size=False,
             fast_version=False,
         )

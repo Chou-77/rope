@@ -118,6 +118,8 @@ def train(config):
                 if config.get('self_cond', None) is not None and config.self_cond.enable:
                     (
                         loss_main,
+                        _pred_x0,
+                        _t,
                         loss_sc,
                         loss_no_sc,
                         sc_abs_mean,
