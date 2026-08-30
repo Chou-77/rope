@@ -130,6 +130,68 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
     print("Initialization finish")
 
+class SelfCondNoiseModel:
+    def __init__(self, score_model):
+        self.score_model = score_model
+        self.self_cond = None
+
+    def reset(self):
+        self.self_cond = None
+
+    @torch.no_grad()
+    def __call__(self, xt, conditions, t):
+        anchor, pos = conditions[:2]
+
+        # 第一次 model evaluation 沒有 previous x0
+        if self.self_cond is None or self.self_cond.shape != xt.shape:
+            self.self_cond = torch.zeros_like(xt)
+
+        cond_sc = [
+            anchor,
+            pos,
+            self.self_cond,
+        ]
+
+        # 只 forward 一次 UViT
+        noise_pred = self.score_model.noise_pred(
+            xt,
+            cond_sc,
+            t,
+        )
+
+        # 用同一份 epsilon prediction 算 x0
+        # 不再 forward 第二次
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor(
+                t,
+                device=xt.device,
+                dtype=xt.dtype,
+            )
+
+        t = t.to(xt.device)
+
+        if t.dim() == 0:
+            t = t.expand(xt.shape[0])
+        elif t.shape[0] == 1 and xt.shape[0] > 1:
+            t = t.expand(xt.shape[0])
+
+        x0_pred = (
+            sde.stp(
+                self.score_model.sde.cum_alpha(t).rsqrt(),
+                xt,
+            )
+            -
+            sde.stp(
+                self.score_model.sde.nsr(t).sqrt(),
+                noise_pred,
+            )
+        )
+
+        # 留給下一次 DPM-Solver model evaluation
+        self.self_cond = x0_pred.detach()
+
+        return noise_pred
+
 class WikiArtDataset(Dataset):
     def __init__(self, path='./dataset/wikiart/test/', size=56):
         f_name = os.listdir(path)
@@ -296,33 +358,48 @@ def sampling(args, config):
 
         start = time.time()
 
+        noise_schedule = NoiseScheduleVP(schedule='linear')
+
+        kwargs = {
+            'conditions': [
+                encode_anchor,
+                prime_target_position,
+            ]
+        }
+
         if use_self_cond:
-            z = sde.euler_maruyama_self_cond(
-                sde.ODE(score_model_ema),
-                x_init=z_init,
-                sample_steps=50,
-                conditions=[encode_anchor, prime_target_position],
-                eps=1e-4,
+            sc_noise_model = SelfCondNoiseModel(
+                score_model_ema
             )
+
+
+            model_fn = model_wrapper(
+                sc_noise_model,
+                noise_schedule,
+                time_input_type='0',
+                model_kwargs=kwargs,
+            )
+
         else:
-            noise_schedule = NoiseScheduleVP(schedule='linear')
-            kwargs = {'conditions': [encode_anchor, prime_target_position]}
             model_fn = model_wrapper(
                 score_model_ema.noise_pred,
                 noise_schedule,
                 time_input_type='0',
                 model_kwargs=kwargs,
             )
-            dpm_solver = DPM_Solver(model_fn, noise_schedule)
 
-            z = dpm_solver.sample(
-                z_init,
-                steps=50,
-                eps=1e-4,
-                adaptive_step_size=False,
-                fast_version=False,
-            )
+        dpm_solver = DPM_Solver(
+            model_fn,
+            noise_schedule
+        )
 
+        z = dpm_solver.sample(
+            z_init,
+            steps=50,
+            eps=1e-4,
+            adaptive_step_size=False,
+            fast_version=False,
+        )
         end = time.time()
         # z_init = torch.randn(encode_anchor.size(), device=args.gpu)
         # noise_schedule = NoiseScheduleVP(schedule='linear')

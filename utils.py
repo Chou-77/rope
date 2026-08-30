@@ -242,7 +242,7 @@ class TrainState(object):
     #                 val.load_state_dict(state_dict)
     #             # ==========================================
 
-    def resume(self, ckpt_root, step=None, load_optimizer=True, load_lr_scheduler=True, reset_step=False,):
+    def resume(self, ckpt_root, step=None, load_optimizer=True, load_lr_scheduler=True):
         if not os.path.exists(ckpt_root):
             print("No checkpoint loaded", ckpt_root)
             return
@@ -256,7 +256,7 @@ class TrainState(object):
         ckpt_path = os.path.join(ckpt_root, f'{step}.ckpt')
         logging.info(f'resume from {ckpt_path}')
         print(f'resume from {ckpt_path}')
-        self.load(ckpt_path, load_optimizer=load_optimizer, load_lr_scheduler=load_lr_scheduler, reset_step=reset_step,)
+        self.load(ckpt_path, load_optimizer=load_optimizer, load_lr_scheduler=load_lr_scheduler)
 
     def to(self, device):
         for key, val in self.__dict__.items():

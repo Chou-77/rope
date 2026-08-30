@@ -66,8 +66,8 @@ def train(config):
     # train_state.resume(config.ckpt_root)
     train_state.resume(
         config.ckpt_root,
-        load_optimizer=True,
-        load_lr_scheduler=True,reset_step=False,
+        load_optimizer=False,
+        load_lr_scheduler=False,
     )
     print("after resume step:", train_state.step)
     print("config lr:", config.optimizer.lr)
