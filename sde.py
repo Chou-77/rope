@@ -356,7 +356,7 @@ def euler_maruyama_self_cond(
     return x
 
 
-def LSimpleSelfCondReturnX0(
+def LSimpleSelfCond(
     score_model: ScoreModel,
     x0,
     conditions,
@@ -376,26 +376,30 @@ def LSimpleSelfCondReturnX0(
     anchor, pos = conditions[:2]
 
     batch_size = x0.shape[0]
-    num_sc = int(batch_size * self_cond_prob)
+
     self_cond = torch.zeros_like(x0)
 
-    if num_sc > 0:
+    sc_mask = torch.rand(
+        batch_size,
+        device=x0.device
+    ) < self_cond_prob
+    if sc_mask.any():
         with torch.no_grad():
             self_cond_pred = score_model.x0_pred(
-                xt[:num_sc],
+                xt[sc_mask],
                 [
-                    anchor[:num_sc],
-                    pos[:num_sc],
-                    torch.zeros_like(x0[:num_sc]),
+                    anchor[sc_mask],
+                    pos[sc_mask],
+                    torch.zeros_like(x0[sc_mask]),
                 ],
-                t[:num_sc],
+                t[sc_mask],
             )
 
-        self_cond[:num_sc] = self_cond_pred.detach()
+        self_cond[sc_mask] = self_cond_pred.detach()
         sc_abs_mean = self_cond_pred.detach().abs().mean()
         sc_abs_max = self_cond_pred.detach().abs().max()
 
-        x0_sc = x0[:num_sc]
+        x0_sc = x0[sc_mask]
 
         x0_abs_mean = x0_sc.detach().abs().mean()
         x0_abs_max = x0_sc.detach().abs().max()
@@ -426,13 +430,15 @@ def LSimpleSelfCondReturnX0(
     else:
         raise NotImplementedError(pred)
 
-    if num_sc > 0:
-        loss_sc = loss[:num_sc].mean()
+    if sc_mask.any():
+        loss_sc = loss[sc_mask].mean()
     else:
         loss_sc = torch.zeros((), device=x0.device)
 
-    if num_sc < batch_size:
-        loss_no_sc = loss[num_sc:].mean()
+    no_sc_mask = ~sc_mask
+
+    if no_sc_mask.any():
+        loss_no_sc = loss[no_sc_mask].mean()
     else:
         loss_no_sc = torch.zeros((), device=x0.device)
 
@@ -460,52 +466,6 @@ def LSimple(score_model: ScoreModel, x0, conditions, pred='noise_pred'):
     else:
         raise NotImplementedError(pred)
 
-def lowfreq_weight(step, total_steps, lambda_low=0.01, start=0.10, end=0.50):
-    progress = float(step) / float(total_steps)
-
-    if progress < start or progress >= end:
-        return 0.0
-
-    ratio = (progress - start) / (end - start)
-    return lambda_low * 0.5 * (1.0 + math.cos(math.pi * ratio))
 
 
-def LSimpleReturnX0(
-    score_model: ScoreModel,
-    x0,
-    conditions=None,
-    pred='noise_pred',
-):
-    # x0 是 target latent
-    x0 = x0.detach()
 
-    if isinstance(conditions, list):
-        conditions = [
-            c.detach() if torch.is_tensor(c) else c
-            for c in conditions
-        ]
-    elif torch.is_tensor(conditions):
-        conditions = conditions.detach()
-
-    t, noise, xt = score_model.sde.sample(x0)
-
-    # 只 forward 一次 nnet
-    model_out = score_model.predict(xt, conditions, t)
-
-    if pred == 'noise_pred':
-        loss_main = mos(noise - model_out)
-
-        alpha = score_model.sde.cum_alpha(t)
-        beta = score_model.sde.cum_beta(t)
-
-        pred_x0 = stp(alpha.rsqrt(), xt) - stp((beta / alpha).sqrt(), model_out)
-
-    elif pred == 'x0_pred':
-        pred_x0 = model_out
-        loss_main = mos(x0 - pred_x0)
-
-    else:
-        raise NotImplementedError(pred)
-
-
-    return loss_main, pred_x0, t

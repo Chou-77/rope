@@ -80,6 +80,63 @@ def ema(model_dest: nn.Module, model_src: nn.Module, rate):
         assert p_src is not p_dest
         p_dest.data.mul_(rate).add_((1 - rate) * p_src.data)
 
+def convert_patch_embed_for_self_cond(state_dict, model):
+    model_state = model.state_dict()
+
+    key = 'patch_embed.proj.weight'
+
+    if key not in state_dict:
+        raise KeyError(f'{key} not found in checkpoint')
+
+    if key not in model_state:
+        raise KeyError(f'{key} not found in current model')
+
+    old_weight = state_dict[key]
+    new_weight = model_state[key]
+
+    print('checkpoint patch_embed:', old_weight.shape)
+    print('current model patch_embed:', new_weight.shape)
+
+    # shape 一樣，不需要轉換
+    if old_weight.shape == new_weight.shape:
+        return state_dict
+
+    # 只允許我們現在需要的 8ch -> 12ch
+    if (
+        old_weight.ndim == 4
+        and new_weight.ndim == 4
+        and old_weight.shape[0] == new_weight.shape[0]
+        and old_weight.shape[1] == 8
+        and new_weight.shape[1] == 12
+        and old_weight.shape[2:] == new_weight.shape[2:]
+    ):
+        converted_weight = torch.zeros(
+            new_weight.shape,
+            dtype=old_weight.dtype,
+            device=old_weight.device,
+        )
+
+        # anchor + xt 的舊權重完整保留
+        converted_weight[:, :8, :, :] = old_weight
+
+        # 第 8~11 channel 就是新增的 self-conditioning
+        # 保持為 0
+        state_dict[key] = converted_weight
+
+        print('convert patch_embed: 8ch -> 12ch')
+        print(
+            'self-cond channel abs max:',
+            state_dict[key][:, 8:, :, :].abs().max().item()
+        )
+
+        return state_dict
+
+    raise RuntimeError(
+        f'Unexpected patch_embed shape: '
+        f'checkpoint={tuple(old_weight.shape)}, '
+        f'current={tuple(new_weight.shape)}'
+    )
+
 
 class TrainState(object):
     def __init__(self, optimizer, lr_scheduler, step, nnet=None, nnet_ema=None):
@@ -108,22 +165,57 @@ class TrainState(object):
             if key != 'step' and val is not None and hasattr(val, 'state_dict'):
                 torch.save(val.state_dict(), os.path.join(path, f'{key}.pth'))
 
-    def load(self, path, load_optimizer=True, load_lr_scheduler=True):
+    def load(
+            self,
+            path,
+            load_optimizer=True,
+            load_lr_scheduler=True,
+            reset_step=False,
+    ):
         logging.info(f'load from {path}')
-        self.step = torch.load(os.path.join(path, 'step.pth'))
+
+        loaded_step = torch.load(
+            os.path.join(path, 'step.pth')
+        )
+
+        if reset_step:
+            self.step = 0
+            print(
+                f'load checkpoint from step {loaded_step}, '
+                f'but reset finetune step to 0'
+            )
+        else:
+            self.step = loaded_step
+
         for key, val in self.__dict__.items():
-            if key != 'step' and val is not None:
+            if key == 'step' or val is None:
+                continue
 
-                if key == 'optimizer' and not load_optimizer:
-                    print("skip optimizer")
-                    continue
+            if key == 'optimizer' and not load_optimizer:
+                print('skip optimizer')
+                continue
 
-                if key == 'lr_scheduler' and not load_lr_scheduler:
-                    print("skip lr_scheduler")
-                    continue
+            if key == 'lr_scheduler' and not load_lr_scheduler:
+                print('skip lr_scheduler')
+                continue
 
-                print("load", key)
-                val.load_state_dict(torch.load(os.path.join(path, f'{key}.pth'), map_location='cpu'))
+            print('load', key)
+
+            state_dict = torch.load(
+                os.path.join(path, f'{key}.pth'),
+                map_location='cpu'
+            )
+
+            if key in ['nnet', 'nnet_ema']:
+                state_dict = convert_patch_embed_for_self_cond(
+                    state_dict,
+                    val
+                )
+
+            val.load_state_dict(
+                state_dict,
+                strict=True
+            )
     # def load(self, path):
     #     logging.info(f'load from {path}')
     #     self.step = torch.load(os.path.join(path, 'step.pth'))
@@ -150,7 +242,7 @@ class TrainState(object):
     #                 val.load_state_dict(state_dict)
     #             # ==========================================
 
-    def resume(self, ckpt_root, step=None, load_optimizer=True, load_lr_scheduler=True):
+    def resume(self, ckpt_root, step=None, load_optimizer=True, load_lr_scheduler=True, reset_step=False,):
         if not os.path.exists(ckpt_root):
             print("No checkpoint loaded", ckpt_root)
             return
@@ -164,7 +256,7 @@ class TrainState(object):
         ckpt_path = os.path.join(ckpt_root, f'{step}.ckpt')
         logging.info(f'resume from {ckpt_path}')
         print(f'resume from {ckpt_path}')
-        self.load(ckpt_path, load_optimizer=load_optimizer, load_lr_scheduler=load_lr_scheduler)
+        self.load(ckpt_path, load_optimizer=load_optimizer, load_lr_scheduler=load_lr_scheduler, reset_step=reset_step,)
 
     def to(self, device):
         for key, val in self.__dict__.items():

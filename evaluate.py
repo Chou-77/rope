@@ -244,7 +244,11 @@ def sampling(args, config):
     autoencoder = libs.autoencoder.get_model("assets/stable-diffusion/autoencoder_kl.pth")
     autoencoder.to(args.gpu)
     train_state = utils.initialize_train_state(config, args.gpu)
-    train_state.resume(config.ckpt_root)
+    train_state.resume(
+        config.ckpt_root,
+        load_optimizer=False,
+        load_lr_scheduler=False,
+    )
     nnet = train_state.nnet
     nnet_ema = train_state.nnet_ema
     nnet_ema.eval()

@@ -234,19 +234,21 @@ class UViT(nn.Module):
         self.in_chans = in_chans
         self.use_self_cond = use_self_cond
 
+        input_chans = in_chans * (3 if use_self_cond else 2)
+
         # 注意：你的模型將 Anchor View (3通道) 和 x (3通道) 合併，所以 in_chans 要 * 2
         self.patch_embed = PatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=in_chans * 2, embed_dim=embed_dim)
+            img_size=img_size, patch_size=patch_size, in_chans=input_chans , embed_dim=embed_dim)
 
-        if self.use_self_cond:
-            self.self_cond_patch_embed = PatchEmbed(
-                img_size=img_size,
-                patch_size=patch_size,
-                in_chans=in_chans,
-                embed_dim=embed_dim
-            )
-        else:
-            self.self_cond_patch_embed = None
+        # if self.use_self_cond:
+        #     self.self_cond_patch_embed = PatchEmbed(
+        #         img_size=img_size,
+        #         patch_size=patch_size,
+        #         in_chans=in_chans,
+        #         embed_dim=embed_dim
+        #     )
+        # else:
+        #     self.self_cond_patch_embed = None
 
         self.time_embed = nn.Sequential(
             nn.Linear(embed_dim, 4 * embed_dim),
@@ -280,10 +282,7 @@ class UViT(nn.Module):
         self.final_layer = nn.Conv2d(self.in_chans, self.in_chans, 3, padding=1) if conv else nn.Identity()
 
         self.apply(self._init_weights)
-        if self.self_cond_patch_embed is not None:
-            nn.init.zeros_(self.self_cond_patch_embed.proj.weight)
-            if self.self_cond_patch_embed.proj.bias is not None:
-                nn.init.zeros_(self.self_cond_patch_embed.proj.bias)
+
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -308,15 +307,23 @@ class UViT(nn.Module):
         anchor_view = anchor_view.float()
         pos_coords = pos_coords.float()
 
-        x = torch.cat([anchor_view, x], dim=1)
-        x = self.patch_embed(x)
-
         if self.use_self_cond:
             if self_cond is None:
-                self_cond = torch.zeros_like(anchor_view)
+                self_cond = torch.zeros_like(x)
 
             self_cond = self_cond.float()
-            x = x + self.self_cond_patch_embed(self_cond)
+
+            x = torch.cat(
+                [anchor_view, x, self_cond],
+                dim=1
+            )
+        else:
+            x = torch.cat(
+                [anchor_view, x],
+                dim=1
+            )
+
+        x = self.patch_embed(x)
 
         # 1. 加入時間特徵
         time_token = self.time_embed(timestep_embedding(timesteps, self.embed_dim)).unsqueeze(dim=1)

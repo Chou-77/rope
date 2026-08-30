@@ -67,26 +67,6 @@ def get_config():
         grid_size=12,
     )
 
-    config.lpl = d(
-        enable=False,
-        lambda_lpl=0.02,
-        weight_schedule='constant',
-        schedule_start=0.65,
-        schedule_end=1.00,
-        snr_threshold=1.0,
-        layers=[3,2,1],
-        # depth-specific weighting
-        depth_weighting=True,
-        depth_weight_power=0.5,
-        # relation loss 專用
-        relation_pool_size=4,
-        relation_temperature=1.0,
-
-        # outlier mask
-        outlier_mask=True,
-        outlier_threshold=4.0,
-        min_valid_ratio=0.25,
-    )
 
     config.sample = d(
         sample_steps=50,
