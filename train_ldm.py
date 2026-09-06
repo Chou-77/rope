@@ -28,7 +28,7 @@ def train(config):
         torch.backends.cudnn.deterministic = False
 
     mp.set_start_method('spawn')
-    accelerator = accelerate.Accelerator(gradient_accumulation_steps=16)
+    accelerator = accelerate.Accelerator(gradient_accumulation_steps=8)
 
     device = accelerator.device
     accelerate.utils.set_seed(config.seed, device_specific=True)
@@ -67,7 +67,7 @@ def train(config):
     train_state.resume(
         config.ckpt_root,
         load_optimizer=False,
-        load_lr_scheduler=False,
+        load_lr_scheduler=True,
     )
     print("after resume step:", train_state.step)
     print("config lr:", config.optimizer.lr)

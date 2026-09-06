@@ -361,7 +361,7 @@ class Flickr(DatasetFactory):
         train_labels = [sorted_classes[x] for x in class_names]
         print('Finish counting FLickr files, total images: %d' % len(train_files))
 
-        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.05, 0.5), target_crop_scale=(0.8, 1.0), p_uncond=0,geometry_sampling="random",
+        self.train = ImageDataset(resolution, train_files, train_labels, embed_dim, grid_size, anchor_crop_scale=(0.2, 0.5), target_crop_scale=(0.8, 1.0), p_uncond=0,geometry_sampling="random",
     stratified_prob=0,)
 
         # val_files = _list_image_files_recursively(path)
