@@ -5,6 +5,7 @@ import numpy as np
 import math
 from tqdm import tqdm
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 
 def get_sde(name, **kwargs):
     if name == 'vpsde':
@@ -29,6 +30,47 @@ def mos(a, start_dim=1):  # mean of square
 def duplicate(tensor, *size):
     return tensor.unsqueeze(dim=0).expand(*size, *tensor.shape)
 
+@torch.no_grad()
+def immiscible_noise_assignment(x0, noise):
+    batch_size = x0.shape[0]
+
+    x0_flat = (0.10 * x0.to(torch.float16)).flatten(start_dim=1)
+    noise_flat = (0.10 * noise.to(torch.float16)).flatten(start_dim=1)
+
+    distance = torch.linalg.vector_norm(
+        x0_flat.unsqueeze(1) - noise_flat.unsqueeze(0),
+        dim=2
+    )
+
+    row_ind, col_ind = linear_sum_assignment(
+        distance.float().cpu().numpy()
+    )
+
+    assignment = torch.empty(
+        batch_size,
+        dtype=torch.long,
+        device=noise.device
+    )
+
+    row_ind = torch.as_tensor(
+        row_ind,
+        dtype=torch.long,
+        device=noise.device
+    )
+
+    col_ind = torch.as_tensor(
+        col_ind,
+        dtype=torch.long,
+        device=noise.device
+    )
+
+    assignment[row_ind] = col_ind
+
+    assert torch.unique(assignment).numel() == batch_size
+
+    assigned_noise = noise[assignment]
+
+    return assigned_noise
 
 class SDE(object):
     r"""
@@ -61,11 +103,24 @@ class SDE(object):
         std = beta ** 0.5  # Cov[xt|x0] ** 0.5
         return mean, std
 
-    def sample(self, x0, t_init=0):  # sample from q(xn|x0), where n is uniform
+    # def sample(self, x0, t_init=0):  # sample from q(xn|x0), where n is uniform
+    #     t = torch.rand(x0.shape[0], device=x0.device) * (1. - t_init) + t_init
+    #     mean, std = self.marginal_prob(x0, t)
+    #     eps = torch.randn_like(x0)
+    #     xt = mean + stp(std, eps)
+    #     return t, eps, xt
+    def sample(self, x0, t_init=0, immiscible=False):
         t = torch.rand(x0.shape[0], device=x0.device) * (1. - t_init) + t_init
+
         mean, std = self.marginal_prob(x0, t)
+
         eps = torch.randn_like(x0)
+
+        if immiscible:
+            eps = immiscible_noise_assignment(x0, eps)
+
         xt = mean + stp(std, eps)
+
         return t, eps, xt
 
 
@@ -455,17 +510,49 @@ def LSimpleSelfCond(
     )
 
 
-def LSimple(score_model: ScoreModel, x0, conditions, pred='noise_pred'):
-    t, noise, xt = score_model.sde.sample(x0)
+# def LSimple(score_model: ScoreModel, x0, conditions, pred='noise_pred'):
+#     t, noise, xt = score_model.sde.sample(x0)
+#     if pred == 'noise_pred':
+#         noise_pred = score_model.noise_pred(xt, conditions, t)
+#         return mos(noise - noise_pred)
+#     elif pred == 'x0_pred':
+#         x0_pred = score_model.x0_pred(xt, conditions, t)
+#         return mos(x0 - x0_pred)
+#     else:
+#         raise NotImplementedError(pred)
+
+def LSimple(
+    score_model: ScoreModel,
+    x0,
+    conditions,
+    pred='noise_pred',
+    immiscible=False
+):
+    t, noise, xt = score_model.sde.sample(
+        x0,
+        immiscible=immiscible
+    )
+
     if pred == 'noise_pred':
-        noise_pred = score_model.noise_pred(xt, conditions, t)
+        noise_pred = score_model.noise_pred(
+            xt,
+            conditions,
+            t
+        )
+
         return mos(noise - noise_pred)
+
     elif pred == 'x0_pred':
-        x0_pred = score_model.x0_pred(xt, conditions, t)
+        x0_pred = score_model.x0_pred(
+            xt,
+            conditions,
+            t
+        )
+
         return mos(x0 - x0_pred)
+
     else:
         raise NotImplementedError(pred)
-
 
 
 

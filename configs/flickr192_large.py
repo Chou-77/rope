@@ -12,6 +12,7 @@ def get_config():
 
     config.seed = 1234
     config.pred = 'noise_pred'
+    config.immiscible = True
     config.z_shape = (4, 24, 24)
 
     config.autoencoder = d(
@@ -19,12 +20,12 @@ def get_config():
     )
 
     config.self_cond = ml_collections.ConfigDict()
-    config.self_cond.enable = True
+    config.self_cond.enable = False
     config.self_cond.prob = 0.5
 
     config.train = d(
         n_steps=100000,
-        batch_size=16,
+        batch_size=32,
         mode='cond',
         log_interval=10,
         eval_interval=5000,
@@ -33,7 +34,7 @@ def get_config():
 
     config.optimizer = d(
         name='adamw',
-        lr=0.0002,
+        lr=0.00005,
         weight_decay=0.03,
         betas=(0.9, 0.999),
     )
@@ -56,7 +57,7 @@ def get_config():
         mlp_time_embed=False,
         num_classes=6001,
         use_checkpoint=True,
-        use_self_cond=True
+        use_self_cond=False
     )
 
     config.dataset = d(

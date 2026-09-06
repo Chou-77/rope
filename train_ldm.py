@@ -169,6 +169,7 @@ def train(config):
                         _z,
                         pred=config.pred,
                         conditions=[encode_anchor, prime_targe_pos],
+                        immiscible=config.get('immiscible', False),
                     )
 
             else:
